@@ -295,7 +295,7 @@ button{cursor:pointer;font-family:inherit}
           <option value="">—</option>
           <option value="Standard">Standard</option>
           <option value="Spécifique">Spécifique</option>
-          <option value="Standard + spécifique">Standard + spécifique</option>
+          <option value="Standard bobines + spécifique carton">Standard bobines + spécifique carton</option>
           <option value="Standard + étiquette mandrin">Standard + étiquette mandrin</option>
         </select>
       </div>
@@ -303,9 +303,10 @@ button{cursor:pointer;font-family:inherit}
         <label>Cerclage</label>
         <select id="planCerclage">
           <option value="">—</option>
-          <option value="Standard (≤39mm)">Standard (≤39mm)</option>
+          <option value="Standard (≤39mm + tous KX)">Standard (≤39mm + tous KX)</option>
           <option value="Aucun">Aucun</option>
           <option value="Élargi (≤40mm)">Élargi (≤40mm)</option>
+          <option value="Par piles cerclées (ratio fourni)">Par piles cerclées (ratio fourni)</option>
         </select>
       </div>
     </div>
@@ -799,7 +800,14 @@ const CLIENT_DATA = {
     {ref:"41319832 - TacFlex® DQ1009",largeur:2100,longueur:600},
     {ref:"41319831 - TacFlex® DQ1009",largeur:2100,longueur:600}
   ],
-  "Gravic Group": [
+  "Gravic Hongrie": [
+    {ref:"41116775 - TacFlex® DC1000",largeur:2140,longueur:1000},
+    {ref:"41117500 - SK 6008AD32",largeur:260,longueur:2300},
+    {ref:"41116929 - TacFlex® DQ1000-1",largeur:2100,longueur:500},
+    {ref:"41116289 - SK 51405A",largeur:2100,longueur:250},
+    {ref:"41117489 - SK 51405A",largeur:2100,longueur:1000}
+  ],
+  "Gravic Tunisie": [
     {ref:"41116775 - TacFlex® DC1000",largeur:2140,longueur:1000},
     {ref:"41117500 - SK 6008AD32",largeur:260,longueur:2300},
     {ref:"41116929 - TacFlex® DQ1000-1",largeur:2100,longueur:500},
@@ -814,13 +822,22 @@ const CLIENT_DATA = {
     {ref:"41319504 - TacFlex® KX1035",largeur:2100,longueur:500},
     {ref:"41312809 - TacFlex® KX1045-1",largeur:2100,longueur:250}
   ],
-  "Legrand": [
+  "Legrand France": [
     {ref:"41116929 - TacFlex® DQ1000-1",largeur:2100,longueur:500},
     {ref:"41319051 - TacFlex® DQ1002",largeur:2100,longueur:1500},
     {ref:"41319526 - TacFlex® DQ1002",largeur:2100,longueur:1500},
     {ref:"41315709 - TacFlex® DQ1042-1",largeur:2100,longueur:1300},
     {ref:"41315237 - TacFlex® DQ1041",largeur:2100,longueur:500},
     {ref:"41319391 - TacFlex® KX1050",largeur:1050,longueur:500}
+  ],
+  "Legrand Polska": [
+    {ref:"41116929 - TacFlex® DQ1000-1",largeur:2100,longueur:500},
+    {ref:"41319051 - TacFlex® DQ1002",largeur:2100,longueur:1500},
+    {ref:"41319526 - TacFlex® DQ1002",largeur:2100,longueur:1500}
+  ],
+  "Legrand Spain": [
+    {ref:"41319051 - TacFlex® DQ1002",largeur:2100,longueur:1500},
+    {ref:"41319526 - TacFlex® DQ1002",largeur:2100,longueur:1500}
   ],
   "Les Zelles": [{ref:"41116850 - TacFlex® DH1006-2",largeur:2200,longueur:500}],
   "LETBEK": [{ref:"41319829 - TacFlex® DQ1009",largeur:2100,longueur:350}],
@@ -844,9 +861,13 @@ const CLIENT_DATA = {
   "PLASTEMBAL": [{ref:"41319829 - TacFlex® DQ1009",largeur:2100,longueur:350}],
   "PLASTICINO": [{ref:"41319080 - TacFlex® DQ1006",largeur:2100,longueur:600}],
   "PLASTIL FR": [{ref:"41319832 - TacFlex® DQ1009",largeur:2100,longueur:600}],
-  "PRIMA - LIMA": [
+  "PRIMA": [
+    {ref:"41312799 - TacFlex® KX1045-1",largeur:2100,longueur:100}
+  ],
+  "LIMA": [
     {ref:"41312799 - TacFlex® KX1045-1",largeur:2100,longueur:100},
-    {ref:"41312809 - TacFlex® KX1045-1",largeur:2100,longueur:250}
+    {ref:"41312806 - TacFlex® KX1045-1",largeur:2100,longueur:250},
+    {ref:"41312809 - TacFlex® KX1045-1",largeur:2100,longueur:500}
   ],
   "PROFILS SYSTEMS": [
     {ref:"41116850 - TacFlex® DH1006-2",largeur:2200,longueur:500},
@@ -942,21 +963,55 @@ const CLIENT_DATA = {
 // ============================================================
 // MATRICE PACKAGING / CONDITIONNEMENT PAR CLIENT
 // ============================================================
-var PKG_DEFAULT={palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm)',notes:'Cerclage ≤39mm + tous KX et DQ1000-1. Pile max 25cm. Largeur sur planchette.'};
+// Règle cerclage générale : ≤39mm + TOUS les films KX (quelle que soit largeur) + DQ1000-1
+// Pile max 25cm. Écrire la largeur sur la planchette.
+var PKG_DEFAULT={palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm + tous KX)',notes:'Règles par défaut : cerclage ≤39mm + tous KX + DQ1000-1. Pile max 25cm. Largeur sur planchette.'};
 
 var PKG_CLIENTS={
-  'EPCO':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm)',notes:'Bobines piquées debout dans caisse palette, montage sur 2 étages. Ajouter 1-2 bobines pour éviter chutes à stocker.\nPlans autorisés : 3×502+1×612 | 4×502 | 2×502+2×557 | 3×612 | 3×502+1×557'},
-  'Alphacan':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Élargi (≤40mm)',notes:'Commande par multiple de 15 (15 bob. au sol, couches de 15, planche carton entre chaque couche). Éviter palettes mixées. Cerclage jusqu\'à 40mm inclus.'},
-  'Gravic Group':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm)',notes:'⚠ GRAVIC HONGRIE : plan au plus juste, chute dans la palette (facturée).\n⚠ GRAVIC TUNISIE : idem + étiquette dans mandrins (réf + n° commande + n° lot BK).'},
-  'Legrand':{palette:'100×120',type:'Carton',etiquetage:'Spécifique',cerclage:'Standard (≤39mm)',notes:'⚠ LEGRAND FRANCE : palette 100×120 + cartons. Impression mandrin : réf (4 derniers chiffres code Legrand) + date + n° lot + n° bob. mère. Palette divers pour petites qté. Fiche détails palette.\n⚠ LEGRAND POLSKA : palette 80×120 + caisse. Bobines en vrac. Pas de cerclage. Étiquetage standard.\n⚠ LEGRAND SPAIN : palette 100×120 + cartons. Étiquette standard sur bobines + spécifique Legrand Spain sur carton.'},
-  'BOUVET':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm)',notes:'20 bobines au sol pour les 40-55-70mm.'},
-  'Cougnaud':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm)',notes:'⚠ Mandrins PARFAITS exigés.'},
-  'CS/Wattom/Kanda':{palette:'100×120',type:'Pyramide',etiquetage:'Standard',cerclage:'Standard (≤39mm)',notes:'2 palettes × 20 bobines sur palette. Palette 100×120 + pyramide.'},
-  'Les Zelles':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm)',notes:'Plans spécifiques : 2×930+300 | 4×540 | 2×540+930 | 7×300 | 5×300+540 | 3×730.\n⚠ Largeur 930mm → PYRAMIDE (pas caisse). Casser les palettes.'},
-  'PRIMA - LIMA':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm)',notes:'Papier vert entre les bobines.\nBob/pile : 20mm=11 | 30mm=7 | 40mm=6 | 50mm=4 | 60mm=4 | 70mm=3 | 80mm=2 | 100mm=2'},
-  'VEKA':{palette:'80×120',type:'Palette nue + réhausses',etiquetage:'Standard',cerclage:'Standard (≤39mm)',notes:'⚠ Alterner bobines pile & face. Réhausses obligatoires. NE PAS filmer les palettes. Palettes solides. Gerbage autorisé par référence uniquement. Tolérance télescopage 10mm.\nBob/pile cerclée (KX) : 15mm=11 | 20mm=8 | 25mm=7 | 30mm=6 | 35mm=5 | 40mm=4 — DQ1009 : 20mm=10'},
-  'Bouyer Leroux - groupe Maine':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm)',notes:''},
-  'CARRETIER ROBIN':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm)',notes:''}
+  'EPCO':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm + tous KX)',
+    notes:'⚡ SPÉCIFICITÉ : Bobines DEBOUT en caisse palette, 2 étages.\nAjouter 1-2 bobines pour éviter chutes à stocker.\nPlans autorisés : 3×502+1×612 | 4×502 | 2×502+2×557 | 3×612 | 3×502+1×557\nArticles : KX1035 / KX1045-1 noir blanc 500ml — Largeurs : 502 / 557 / 612mm'},
+
+  'Alphacan':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Élargi (≤40mm)',
+    notes:'⚡ SPÉCIFICITÉ : Multiple de 15 + cerclage élargi ≤40mm.\nCommande par multiple de 15 (15 bob. au sol, couches de 15, planche carton entre chaque couche).\nÉviter palettes mixées.\nArticle : AC1000 vert 600ml — Largeurs : 33/40/50/90/113/120/170/185/210/283/307mm'},
+
+  'Gravic Hongrie':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm + tous KX)',
+    notes:'⚡ SPÉCIFICITÉ : Chute facturée, étiquetage standard seul.\nPlan au plus juste, découper et mettre la chute dans la palette (la chute est facturée).'},
+
+  'Gravic Tunisie':{palette:'80×120',type:'Caisse',etiquetage:'Standard + étiquette mandrin',cerclage:'Standard (≤39mm + tous KX)',
+    notes:'⚡ SPÉCIFICITÉ : Idem Hongrie (chute facturée) + étiquette dans mandrins.\nPlan au plus juste, chute dans la palette (facturée).\nÉtiquette dans mandrins : réf + n° commande + n° lot BK.'},
+
+  'Legrand France':{palette:'100×120',type:'Carton',etiquetage:'Spécifique',cerclage:'Standard (≤39mm + tous KX)',
+    notes:'⚡ SPÉCIFICITÉ : Mandrin 4 infos + palette de divers + fiche détails, 100×120 cartons.\nImpression mandrin : réf (4 derniers chiffres code Legrand) + date + n° lot interne + n° bob. mère.\nPalette de divers pour les petites quantités. Fiche détails palette obligatoire.\nArticles : DQ1000-1 500ml, DQ1002 1500ml, DQ1042-1 1300ml, DQ1041 500ml, KX1050 500ml'},
+
+  'Legrand Polska':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Aucun',
+    notes:'⚡ SPÉCIFICITÉ : Vrac, AUCUN cerclage, 80×120 caisse, étiquetage standard.\nBobines en vrac — pas de cerclage.\nArticles : DQ1002 IMP PW 1500ml, DQ1002 IMP LEGRAND 1500ml, DQ1002 TRANSPARENT 1500ml, DQ1000 transp 500ml'},
+
+  'Legrand Spain':{palette:'100×120',type:'Carton',etiquetage:'Standard bobines + spécifique carton',cerclage:'Standard (≤39mm + tous KX)',
+    notes:'⚡ SPÉCIFICITÉ : Étiquetage standard bobines + spécifique carton, 100×120 cartons (ratio /C).\nArticle : DQ1002 IMP LEGRAND 1500ml.\nRatio bob/carton : 28mm=8/C cerclés, 44mm=5/C, 48mm=5/C, 56mm=3/C, 59mm=3/C, 61mm=3/C, 63mm=3/C, 66mm=3/C, 75mm=3/C, 90mm=2/C, 110mm=2/C, 150mm=1/C'},
+
+  'BOUVET':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm + tous KX)',
+    notes:'⚡ SPÉCIFICITÉ : 20 bobines au sol pour 40-55-70mm.\nDQ1009 Bleu 600ml : 20mm=11/p ×48p, 30mm=7/p ×48p, 40/55/70mm.\nDQ1000-1 transp 500ml : 20mm=5/p, 30mm=5/p, 40mm=4/p, 50mm=4/p, 70mm=3/p'},
+
+  'Cougnaud':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm + tous KX)',
+    notes:'⚡ SPÉCIFICITÉ : Mandrins PARFAITS exigés + caisse/carton mixte.\nDQ1006 Bleu 600ml (bob/pile par largeur 14-90mm).\nKX1011-1 noir blanc 500ml (bob/carton par largeur 14-130mm).\nDQ1009 vert 600ml : 19mm=6/p, 2p/carton.'},
+
+  'CS/Wattom/Kanda':{palette:'100×120',type:'Pyramide',etiquetage:'Standard',cerclage:'Standard (≤39mm + tous KX)',
+    notes:'⚡ SPÉCIFICITÉ : Pyramide 100×120, 2 palettes × 20 bobines.\nArticle : DQ1009 transp 350ml — Largeurs : 1300mm, 100mm'},
+
+  'Les Zelles':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm + tous KX)',
+    notes:'⚡ SPÉCIFICITÉ : Pyramide UNIQUEMENT pour 930mm + casser les palettes.\n⚠ Largeur 930mm → changer type en PYRAMIDE (pas caisse).\nPlans spécifiques : 2×930+300 | 4×540 | 2×540+930 | 7×300 | 5×300+540 | 3×730 (très juste)\nArticle : DH1006 micro perf 500ml — Codes : 300mm=9000347003, 540/730mm=9000347004, 930mm=9000347005'},
+
+  'PRIMA':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm + tous KX)',
+    notes:'⚡ SPÉCIFICITÉ : Papier vert + 100ml seul + cerclage standard ≤39mm.\nPapier vert entre les bobines.\nArticle : KX1045 noir blanc 100ml.\nBob/pile : 20mm=11 | 30mm=7 | 40mm=6 | 50mm=4 | 60mm=4 | 70mm=3 | 80mm=2 | 100mm=2'},
+
+  'LIMA':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm + tous KX)',
+    notes:'⚡ SPÉCIFICITÉ : Papier vert + gamme 100/250/500ml + cerclage sans seuil rappelé (à confirmer).\nPapier vert entre les bobines.\nArticles : KX1045 noir blanc 100/250/500ml.\n⚠ Cerclage : pas de seuil standard rappelé — à confirmer si ≤39mm s\'applique.\nBob/pile : 20mm=11 | 30mm=7 | 40mm=6 | 50mm=4 | 60mm=4 | 70mm=3 | 80mm=2 | 100mm=2'},
+
+  'VEKA':{palette:'80×120',type:'Palette nue + réhausses',etiquetage:'Standard',cerclage:'Par piles cerclées (ratio fourni)',
+    notes:'⚡ SPÉCIFICITÉ : NE PAS filmer + réhausses + gerbage par réf. + télescopage ≤10mm + pile&face.\n⚠ Alterner bobines pile & face. Réhausses obligatoires.\nPalettes solides. Gerbage autorisé par référence UNIQUEMENT.\nBob/pile cerclée (KX1075/1006-1) : 15mm=11 | 20mm=8 | 25mm=7 | 30mm=6 | 35mm=5 | 40mm=4\nDQ1009 : 20mm=10/pile'},
+
+  'Bouyer Leroux - groupe Maine':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm + tous KX)',notes:'Règles par défaut.'},
+  'CARRETIER ROBIN':{palette:'80×120',type:'Caisse',etiquetage:'Standard',cerclage:'Standard (≤39mm + tous KX)',notes:'Règles par défaut.'}
 };
 
 function applyPackagingRules(clientName){
@@ -965,13 +1020,20 @@ function applyPackagingRules(clientName){
   document.getElementById('planType').value=rules.type||'';
   document.getElementById('planEtiquetage').value=rules.etiquetage||'';
   document.getElementById('planCerclage').value=rules.cerclage||'';
-  document.getElementById('planNotesEmballage').value=rules.notes||'';
-  var alert=document.getElementById('packagingAlert');
+  // Auto-détection KX dans la référence sélectionnée
+  var refVal=document.getElementById('planRef').value||'';
+  var cerclageNote='';
+  if(refVal.match(/KX/i)){
+    cerclageNote='\n🔵 Film KX détecté → cerclage automatique quelle que soit la largeur.';
+  }
+  document.getElementById('planNotesEmballage').value=(rules.notes||'')+cerclageNote;
+  var alertEl=document.getElementById('packagingAlert');
   if(PKG_CLIENTS[clientName]){
-    alert.classList.remove('hidden');
-    alert.innerHTML='⚡ Règles spécifiques <strong>'+clientName+'</strong> appliquées automatiquement. Vérifie et adapte si besoin.';
+    alertEl.classList.remove('hidden');
+    var warn='⚡ Règles spécifiques <strong>'+clientName+'</strong> appliquées. Vérifie et adapte si besoin.';
+    alertEl.innerHTML=warn;
   } else {
-    alert.classList.add('hidden');
+    alertEl.classList.add('hidden');
   }
 }
 
@@ -1174,6 +1236,8 @@ function onRefChange(){
       onParamChange();
     }
   }
+  // Re-appliquer packaging pour détecter KX dans la nouvelle réf
+  if(client) applyPackagingRules(client);
 }
 
 function syncLargeur(){
