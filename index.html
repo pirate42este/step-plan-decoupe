@@ -1913,91 +1913,52 @@ function sendEmailPlan(){
   const ficheData=getFicheLinesData();
 
   const planName=buildPlanName();
-  const sep='===========================================================\n';
-  const sepLight='-----------------------------------------------------------\n';
 
-  let body=`PLAN DE DÉCOUPE — STEP International\n`;
-  body+=`Plan : ${planName}\n`;
-  body+=`Date : ${today()}\n\n`;
+  // === CORPS DU MAIL — VERSION COMPACTE (pour rentrer dans URL Gmail) ===
+  let body=`PLAN DE DÉCOUPE — STEP International — ${today()}\n`;
+  body+=`Plan : ${planName}\n\n`;
+  body+=`== EN-TÊTE ==\n`;
+  body+=`Op1: ${ini}${ini2?` / Op2: ${ini2}${op2Bob?` (dès B${op2Bob})`:''}`:''}\n`;
+  body+=`Client: ${client} | Ref: ${ref} | Long: ${longueur} m\n`;
+  body+=`Machine: ${machine} | Mere: ${mother} mm | Utile: ${fmt(useful)} | Lame: ${fmt(blade)} (N°${lame}) | J${numJour}\n`;
+  body+=`Emballage: Palette ${palette} | ${typeCond} | Etiq ${etiquetage} | Cerc ${cerclage}\n`;
+  if(notesEmb) body+=`Notes: ${notesEmb.replace(/\n/g,' | ')}\n`;
+  body+=`Temps: ${tempsStr}\n\n`;
 
-  body+=sep;
-  body+=`  EN-TÊTE\n`;
-  body+=sep;
-  body+=`  Opérateur 1     : ${ini}\n`;
-  if(ini2) body+=`  Opérateur 2     : ${ini2}${op2Bob?` (repris bobine ${op2Bob})`:''}\n`;
-  body+=`  Client          : ${client}\n`;
-  body+=`  Référence       : ${ref}\n`;
-  body+=`  Longueur réf.   : ${longueur} m\n`;
-  body+=`  Machine         : ${machine}\n`;
-  body+=`  Bobine mère     : ${mother} mm\n`;
-  body+=`  Utile / Lame    : ${fmt(useful)} mm  /  ${fmt(blade)} mm\n`;
-  body+=`  Lame N°         : ${lame}\n`;
-  body+=`  N° Jour         : ${numJour}\n`;
-  body+=`  Palette         : ${palette}\n`;
-  body+=`  Type cond.      : ${typeCond}\n`;
-  body+=`  Étiquetage      : ${etiquetage}\n`;
-  body+=`  Cerclage        : ${cerclage}\n`;
-  if(notesEmb) body+=`  Notes emballage : ${notesEmb.replace(/\n/g,' | ')}\n`;
-  body+=`  Temps commande  : ${tempsStr}\n\n`;
+  body+=`== COMMANDE ==\n`;
+  body+=rows.map(r=>`${r.qty}x${r.width}`).join(' + ')+`\n\n`;
 
-  body+=sep;
-  body+=`  COMMANDE INITIALE\n`;
-  body+=sep;
-  rows.forEach(r=>{body+=`  • ${r.qty} × ${r.width} mm\n`;});
-  body+=`\n`;
-
-  body+=sep;
-  body+=`  PLAN THÉORIQUE — ${nbPlan} bobine(s)  |  perte ${pct.toFixed(1)}%\n`;
-  body+=sep;
-  let bobNumPlan=0;
+  body+=`== PLAN THEORIQUE (${nbPlan} bob, perte ${pct.toFixed(1)}%) ==\n`;
   groups.forEach((g,gi)=>{
     const st=calcStats(g.pattern,blade);
     const waste=useful-st.total;
-    const isLast=gi===groups.length-1;
     const label=makeLabel(g.pattern);
-    const totalMm=fmt(st.total);
-    for(let k=0;k<g.count;k++){
-      bobNumPlan++;
-      body+=`  Bobine ${String(bobNumPlan).padStart(2,'0')} : ${label}\n`;
-      body+=`             total ${totalMm} mm | chute ${fmt(waste)} mm${(isLast&&k===g.count-1)?' [SOLDE]':''}\n`;
-    }
+    const soldeTag=gi===groups.length-1?' [SOLDE]':'';
+    body+=`${g.count}x ${label} (tot ${fmt(st.total)} mm, chute ${fmt(waste)} mm)${soldeTag}\n`;
   });
   body+=`\n`;
 
-  body+=sep;
-  body+=`  FICHE TERRAIN — ${nbFiche} bobine(s) réellement coupée(s)\n`;
-  body+=sep;
-  if(hasEcart){
-    body+=`\n  ⚠⚠⚠  ÉCART AVEC LE PLAN  ⚠⚠⚠\n`;
-    body+=`  ${ecartMsg}\n\n`;
-  }
+  body+=`== FICHE TERRAIN (${nbFiche} bob coupees) ==\n`;
+  if(hasEcart) body+=`>>> ECART: ${ecartMsg} <<<\n`;
   ficheData.forEach((fd,i)=>{
-    const bobNum=i+1;
-    const horsPlan=bobNum>nbPlan;
-    const marker=horsPlan?'⚠ HORS PLAN':'';
-    const photoTag=fd.photo?' [PHOTO]':'';
-    body+=sepLight;
-    body+=`  Bobine ${String(bobNum).padStart(2,'0')}  ${fd.label?`[${fd.label}]`:''}  ${marker}${photoTag}\n`;
-    body+=`     Configuration : ${fd.conf||'—'}\n`;
-    body+=`     Statut        : ${fd.coupee?'✓ Coupée':'✗ Non coupée'}\n`;
+    const bn=i+1;
+    const horsPlan=bn>nbPlan;
     const ncs=[];
-    if(fd.ncLarg) ncs.push('Largeur');
-    if(fd.ncQty) ncs.push('Quantité');
+    if(fd.ncLarg) ncs.push('Larg');
+    if(fd.ncQty) ncs.push('Qty');
     if(fd.ncCasse) ncs.push('Casse');
-    if(fd.ncAng) ncs.push('Angle');
-    body+=`     Conformité    : ${ncs.length?'⚠ '+ncs.join(', '):'✓ RAS'}\n`;
-    if(fd.ncDetail) body+=`     Détail NC     : ${fd.ncDetail}\n`;
-    if(fd.actDechet) body+=`     Action        : 🗑 Déchet\n`;
-    if(fd.actChutes) body+=`     Action        : ✂ Chutes\n`;
-    if(fd.devi||fd.droit){
-      const tests=[];
-      if(fd.devi) tests.push('Déviation');
-      if(fd.droit) tests.push('Droiture');
-      body+=`     Tests 2 mains : ${tests.join(', ')}\n`;
-    }
+    if(fd.ncAng) ncs.push('Ang');
+    const ncStr=ncs.length?` NC:${ncs.join(',')}`:'';
+    const ncDet=fd.ncDetail?` (${fd.ncDetail})`:'';
+    const act=fd.actDechet?' DECHET':fd.actChutes?' CHUTES':'';
+    const photo=fd.photo?' [P]':'';
+    const cut=fd.coupee?'OK':'NC';
+    const tests=(fd.devi&&fd.droit)?' T2M:OK':'';
+    const lbl=fd.label?`[${fd.label}] `:'';
+    const hp=horsPlan?' *HORS PLAN*':'';
+    body+=`B${String(bn).padStart(2,'0')} ${lbl}${fd.conf||'?'} - ${cut}${ncStr}${ncDet}${act}${tests}${photo}${hp}\n`;
   });
-  body+=sepLight;
-  body+=`\n-- Fin du plan -- ${today()} --\n`;
+  body+=`\n-- Fin --`;
 
   doChronoSaveAuto(client,ref,ini,rows,ini2,op2Bob);
 
@@ -2012,22 +1973,29 @@ function sendEmailPlan(){
     ficheDetail:ficheDetailTagged,
     nbPlan,nbFiche,hasEcart,ecartMsg
   });
-  // Copier le body dans le presse-papier puis ouvrir Gmail (vide)
-  // Évite l'erreur 400 Gmail (URL trop longue)
-  const gmailUrl=`https://mail.google.com/mail/?view=cm&to=esterozier42480%40gmail.com&su=${encodeURIComponent(planName)}`;
-  const openGmail=()=>window.open(gmailUrl,'_blank');
-  if(navigator.clipboard&&navigator.clipboard.writeText){
-    navigator.clipboard.writeText(body).then(()=>{
-      alert('✓ Plan copié dans le presse-papier.\n\nGmail va s\'ouvrir : colle le plan dans le corps du mail (Cmd+V ou Ctrl+V).');
-      openGmail();
-    }).catch(()=>{
-      // Fallback si clipboard refuse
-      promptCopy(body);
-      openGmail();
-    });
+
+  // === ENVOI : tente URL Gmail directe, fallback presse-papier si trop long ===
+  const subject=encodeURIComponent(planName);
+  const bodyEnc=encodeURIComponent(body);
+  const gmailUrlFull=`https://mail.google.com/mail/?view=cm&to=esterozier42480%40gmail.com&su=${subject}&body=${bodyEnc}`;
+  const gmailUrlEmpty=`https://mail.google.com/mail/?view=cm&to=esterozier42480%40gmail.com&su=${subject}`;
+  // Gmail accepte ~2000 chars d'URL. On laisse 200 de marge.
+  if(gmailUrlFull.length<1800){
+    window.open(gmailUrlFull,'_blank');
   } else {
-    promptCopy(body);
-    openGmail();
+    // Trop long → copier dans presse-papier + ouvrir Gmail vide
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(body).then(()=>{
+        alert('📋 Plan trop long pour l\'URL Gmail — copié dans le presse-papier.\n\nDans le mail Gmail qui s\'ouvre, fais Cmd+V (ou Ctrl+V) pour coller le plan.');
+        window.open(gmailUrlEmpty,'_blank');
+      }).catch(()=>{
+        promptCopy(body);
+        window.open(gmailUrlEmpty,'_blank');
+      });
+    } else {
+      promptCopy(body);
+      window.open(gmailUrlEmpty,'_blank');
+    }
   }
 
   // Reset complet après envoi — prêt pour la commande suivante
