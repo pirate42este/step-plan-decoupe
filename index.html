@@ -741,6 +741,7 @@ function applyRole(){
         currentUser=Object.assign({}, profile);
         currentAuth=user;
         applyRole();
+        loadFirestoreData();
       }else{
         // UID non reconnu — déconnecter
         console.warn('UID non reconnu:',user.uid);
@@ -3000,7 +3001,7 @@ function printFiche(){
   initDefaultRows();
   document.getElementById('fNumJour').value=getDayOfYear();
   recalcPlan();
-  loadFirestoreData();
+  // loadFirestoreData() est appelé après authentification dans onAuthStateChanged
 })();
 </script>
 </body>
