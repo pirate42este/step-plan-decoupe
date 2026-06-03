@@ -574,6 +574,7 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
   <!-- ONGLET FICHES -->
   <div id="tabContentFiches" class="hidden">
     <div class="flex-wrap" style="margin-bottom:12px" id="fichesManageBtns">
+      <button class="btn btn-ghost btn-sm" id="btnToggleValid" onclick="toggleValidatedFiches()">✓ Fiches validées</button>
       <button class="btn btn-ghost btn-sm" onclick="exportFiches()">⬇️ Exporter CSV</button>
       <button class="btn btn-red btn-sm" onclick="clearFiches()">📦 Tout archiver</button>
     </div>
@@ -718,6 +719,7 @@ var storage=null;
 var savesCache=[];
 var tempsCache=[];
 var fichesCache=[];
+var showValidatedFiches=false;
 
 try{
   firebase.initializeApp({
@@ -1486,6 +1488,25 @@ function initAtelier(){
 
 // Synchronise la fiche depuis le plan (client, réf, longueur + lignes bobines)
 // Ne touche PAS la fiche si l'opérateur a déjà commencé (lignes présentes) — protège le travail terrain
+function isFicheUntouched(){
+  // Retourne true si aucune saisie opérateur n'a été faite sur les bobines
+  // (pas de photo, pas de NC bad, pas de coupée, pas de test 2ème, pas d'action).
+  // Permet de re-synchroniser depuis le Plan sans détruire le travail terrain.
+  if(ficheLines.length===0) return true;
+  for(const {id} of ficheLines){
+    if(document.getElementById(id)?.classList.contains('coupee')) return false;
+    if(ficholinePhotos[id]) return false;
+    if((document.getElementById('nc_detail_'+id)?.value||'').trim()) return false;
+    const ncBad=['larg','qty','casse','ang'].some(k=>document.getElementById('nc_'+k+'_'+id)?.querySelector('input')?.checked);
+    if(ncBad) return false;
+    if(document.getElementById('act_dechet_'+id)?.classList.contains('btn-red')) return false;
+    if(document.getElementById('act_chutes_'+id)?.classList.contains('btn-orange')) return false;
+    if(document.getElementById('flDevi_'+id)?.checked) return false;
+    if(document.getElementById('flDroit_'+id)?.checked) return false;
+  }
+  return true;
+}
+
 function syncFicheFromPlan(){
   // Toujours propager les en-têtes (sans écraser une saisie manuelle existante)
   const client=document.getElementById('planClient').value;
@@ -1507,23 +1528,27 @@ function syncFicheFromPlan(){
   const planNotes=document.getElementById('planNotesEmballage');
   const ficheNotes=document.getElementById('fNotesEmballage');
   if(planNotes&&ficheNotes&&planNotes.value&&!ficheNotes.value) ficheNotes.value=planNotes.value;
-  // Importer les lignes bobines seulement si la fiche est encore vide
-  if(ficheLines.length===0){
-    const rows=getOrderRows();
-    if(rows.length){
-      const useful=getUseful(),blade=getBlade();
-      commandTotals={};
-      rows.forEach(r=>{commandTotals[r.width]=(commandTotals[r.width]||0)+r.qty;});
-      const groups=groupBobines(pack(expandDemand(rows),useful,blade),blade);
-      let bi=1;
-      groups.forEach(g=>{
-        for(let ci=0;ci<g.count;ci++){
-          addFicheLine({label:'BOB-'+String(bi).padStart(3,'0'),conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + ')});
-          bi++;
-        }
-      });
-      refreshOp2BobineList();
+  // Bobines : import auto depuis le plan, refait à chaque venue sur la Fiche
+  // tant que l'opérateur n'a rien saisi (photo, NC, coupée, etc.)
+  const rows=getOrderRows();
+  if(rows.length && isFicheUntouched()){
+    if(ficheLines.length>0){
+      document.getElementById('ficheLines').innerHTML='';
+      ficheLines=[];
+      ficholinePhotos={};
     }
+    const useful=getUseful(),blade=getBlade();
+    commandTotals={};
+    rows.forEach(r=>{commandTotals[r.width]=(commandTotals[r.width]||0)+r.qty;});
+    const groups=groupBobines(pack(expandDemand(rows),useful,blade),blade);
+    let bi=1;
+    groups.forEach(g=>{
+      for(let ci=0;ci<g.count;ci++){
+        addFicheLine({label:'BOB-'+String(bi).padStart(3,'0'),conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + ')});
+        bi++;
+      }
+    });
+    refreshOp2BobineList();
   }
 }
 
@@ -2942,13 +2967,36 @@ function renderAnalyse(){
   </div>`;
 }
 
+function toggleValidatedFiches(){
+  showValidatedFiches=!showValidatedFiches;
+  renderFiches();
+}
+
 function renderFiches(){
-  const fiches=fichesCache.filter(f=>!f.deleted);
+  const all=fichesCache.filter(f=>!f.deleted);
+  const nbValid=all.filter(f=>f.valide===true).length;
+  const fiches=showValidatedFiches?all.filter(f=>f.valide===true):all.filter(f=>f.valide!==true);
   const list=document.getElementById('fichesList');
   const empty=document.getElementById('fichesEmpty');
-  if(!fiches.length){list.innerHTML='';empty.classList.remove('hidden');return;}
+  // Mise à jour du bouton toggle
+  const btn=document.getElementById('btnToggleValid');
+  if(btn){
+    btn.textContent=showValidatedFiches?`← Retour aux fiches en cours`:`✓ Fiches validées (${nbValid})`;
+    btn.className='btn btn-sm '+(showValidatedFiches?'btn-green':'btn-ghost');
+  }
+  if(!fiches.length){
+    list.innerHTML=showValidatedFiches
+      ?'<div style="text-align:center;padding:30px 16px;color:var(--muted);background:var(--card);border:1px solid var(--border2);border-radius:10px"><div style="font-size:32px;margin-bottom:8px">📁</div><div>Aucune fiche validée pour l\'instant.</div></div>'
+      :'';
+    empty.classList.toggle('hidden',showValidatedFiches);
+    return;
+  }
   empty.classList.add('hidden');
-  list.innerHTML=fiches.map(f=>{
+  // Bandeau d'info si on consulte les archives
+  const banner=showValidatedFiches
+    ?`<div style="background:#14371f;border:1px solid #2a5c2a;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#4ade80"><strong>Mode archives</strong> — fiches validées par Dominique. Toujours stockées, sorties du flux quotidien.</div>`
+    :'';
+  list.innerHTML=banner+fiches.map(f=>{
     const d=new Date(f.date);
     const ds=d.toLocaleDateString('fr-FR')+' '+d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
     const cmd=(f.rows||[]).map(r=>`${r.qty}×${r.width}`).join(' + ');
