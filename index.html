@@ -587,6 +587,7 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
   <div id="tabContentSaves">
     <div id="backupBtnZone" class="flex-wrap" style="margin-bottom:12px;display:none">
       <button class="btn btn-orange btn-sm" onclick="downloadFullBackup()">📦 Sauvegarde complète JSON</button>
+      <button class="btn btn-ghost btn-sm" onclick="downloadColdArchive()">🧊 Archive froide</button>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
       <select id="saveFilterClient" onchange="renderSaves()" style="flex:1;min-width:120px;padding:8px 10px;border-radius:8px;border:1px solid var(--border2);background:var(--card);color:var(--text);font-size:13px">
@@ -680,7 +681,7 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
 
   <!-- ONGLET CORBEILLE -->
   <div id="tabContentCorbeille" class="hidden">
-    <div style="padding:10px 0 14px;font-size:13px;color:var(--muted)">Éléments archivés — récupérables pendant 45 jours. Passé ce délai, supprimés définitivement.</div>
+    <div style="padding:10px 0 14px;font-size:13px;color:var(--muted)">Éléments archivés. Fiches <b>validées</b> conservées 2 ans (qualité/ISO). Autres éléments supprimés après 45 jours. Avant suppression, tout est sauvegardé dans l'archive froide (🧊 dans Plans).</div>
     <div id="corbeilleList"></div>
     <div id="corbeilleEmpty" class="text-muted" style="padding:8px 0">Corbeille vide.</div>
   </div>
@@ -749,6 +750,10 @@ const USER_PROFILES={
 };
 // Destinataire du mail plan de découpe — changer ici uniquement (un seul endroit)
 const MAIL_DESTINATAIRE='d.cotte@step-international.com';
+// Rétention archives (réglable ici)
+const RETENTION_DRAFT_DAYS=45;    // brouillons / fiches NON validées : purge auto après 45 jours
+const RETENTION_VALID_DAYS=730;   // fiches VALIDÉES : conservées 2 ans (730 j) — qualité / ISO / réclamations
+const COLD_ARCHIVE_KEY='step_cold_archive'; // archivage froid local avant purge définitive
 var currentRole=null;
 var currentUser=null;
 var currentAuth=null;
@@ -899,21 +904,63 @@ async function loadCorbeille(silent){
   }
 }
 
-// Purge automatique des items archivés depuis plus de 45 jours (opère sur corbeilleCache)
+// Purge automatique des items archivés (opère sur corbeilleCache).
+// Rétention différenciée :
+//   - fiches VALIDÉES : conservées 2 ans (RETENTION_VALID_DAYS)
+//   - tout le reste (brouillons, plans, temps, fiches non validées) : 45 jours
+// Avant toute suppression définitive, l'item est sauvegardé dans une archive froide locale (JSON).
 async function purgeExpiredItems(){
   if(!db) return;
   const now=Date.now();
-  const _45days=45*24*60*60*1000;
-  const isExpired=item=>item.deletedAt&&(now-new Date(item.deletedAt).getTime())>_45days;
+  const dayMs=24*60*60*1000;
+  const retentionFor=item=>{
+    // Une fiche validée bénéficie de la rétention longue
+    if(item._col==='fiches' && item.valide===true) return RETENTION_VALID_DAYS*dayMs;
+    return RETENTION_DRAFT_DAYS*dayMs;
+  };
+  const isExpired=item=>item.deletedAt&&(now-new Date(item.deletedAt).getTime())>retentionFor(item);
   const expired=corbeilleCache.filter(isExpired);
   if(!expired.length) return;
   try{
+    // Archivage froid : on conserve une copie JSON locale avant suppression définitive
+    addToColdArchive(expired);
     // Supprime aussi les photos Storage des fiches expirées
     for(const it of expired){ if(it._col==='fiches') await deleteFichePhotos(it); }
     await Promise.all(expired.map(it=>db.collection(it._col).doc(it._id).delete()));
     corbeilleCache=corbeilleCache.filter(it=>!isExpired(it));
-    console.log('Purge 45j :',expired.length,'élément(s) supprimé(s) définitivement.');
+    console.log('Purge :',expired.length,'élément(s) supprimé(s) définitivement (archivés en froid avant).');
   }catch(e){console.error('Erreur purge auto :',e);}
+}
+
+// Archive froide locale : stocke les items purgés dans localStorage (JSON), récupérables via téléchargement.
+function addToColdArchive(items){
+  if(!items||!items.length) return;
+  try{
+    let arch=[];
+    try{arch=JSON.parse(localStorage.getItem(COLD_ARCHIVE_KEY)||'[]');}catch(e){arch=[];}
+    const stamp=new Date().toISOString();
+    items.forEach(it=>{
+      // On retire les photos base64 lourdes pour ne pas saturer localStorage ; on garde les métadonnées
+      const copy=JSON.parse(JSON.stringify(it));
+      if(Array.isArray(copy.ficheDetail)){
+        copy.ficheDetail.forEach(fd=>{ if(fd&&typeof fd.photo==='string'&&fd.photo.startsWith('data:')) fd.photo='[photo retirée de l\'archive froide]'; });
+      }
+      copy._archivedAt=stamp;
+      arch.push(copy);
+    });
+    localStorage.setItem(COLD_ARCHIVE_KEY,JSON.stringify(arch));
+  }catch(e){console.warn('Archive froide non écrite (espace local plein ?) :',e.message);}
+}
+
+// Télécharge l'archive froide complète en JSON
+function downloadColdArchive(){
+  let arch=[];
+  try{arch=JSON.parse(localStorage.getItem(COLD_ARCHIVE_KEY)||'[]');}catch(e){arch=[];}
+  if(!arch.length){alert('Aucun élément en archive froide pour le moment.\n\n(Les éléments y sont déplacés automatiquement juste avant leur suppression définitive.)');return;}
+  const payload={exportDate:new Date().toISOString(),exportBy:currentUser?(currentUser.nom||currentUser.ini):'?',note:'Archive froide — éléments purgés de la corbeille. Conservés ici avant suppression définitive.',count:arch.length,items:arch};
+  const b=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(b);
+  a.download='step_archive_froide_'+new Date().toISOString().slice(0,10)+'.json';a.click();
 }
 
 // Supprime toutes les photos Storage référencées par une fiche (best-effort)
@@ -3872,9 +3919,21 @@ async function restoreItem(collection,id){
 
 async function permanentDelete(collection,id){
   if(!canPermanentDelete()){alert('Suppression définitive réservée au pilotage et aux admins. Les opérateurs peuvent seulement archiver (suppression auto à 45 jours).');return;}
+  // Protection qualité/ISO : une fiche VALIDÉE ne peut pas être supprimée avant 2 ans
+  if(collection==='fiches'){
+    const it=corbeilleCache.find(x=>x._id===id);
+    if(it&&it.valide===true){
+      const ageDays=it.deletedAt?Math.floor((Date.now()-new Date(it.deletedAt).getTime())/(24*60*60*1000)):0;
+      if(ageDays<RETENTION_VALID_DAYS){
+        const reste=RETENTION_VALID_DAYS-ageDays;
+        alert('⛔ Suppression refusée.\n\nCette fiche est VALIDÉE et doit être conservée 2 ans (qualité / ISO / réclamations clients).\n\nElle pourra être supprimée dans '+reste+' jour(s).');
+        return;
+      }
+    }
+  }
   if(!confirm('Supprimer définitivement ? Cette action est irréversible.')) return;
   try{
-    if(collection==='fiches'){const it=corbeilleCache.find(x=>x._id===id);if(it) await deleteFichePhotos(it);}
+    if(collection==='fiches'){const it=corbeilleCache.find(x=>x._id===id);if(it){addToColdArchive([it]);await deleteFichePhotos(it);}}
     await db.collection(collection).doc(id).delete();
     corbeilleCache=corbeilleCache.filter(x=>x._id!==id);
     await logAudit('permanent_delete',collection,id,'');
