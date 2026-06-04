@@ -460,6 +460,12 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
     </div>
     <div class="row2">
       <div class="field">
+        <label>N° de lot <span style="color:var(--muted);font-size:11px">à compléter à la main</span></label>
+        <input type="text" id="fNumLot" placeholder="ex : LOT-2026-0142" inputmode="text">
+      </div>
+    </div>
+    <div class="row2">
+      <div class="field">
         <label>Longueur réf. (m) <span style="color:var(--green);font-size:11px">auto depuis plan</span></label>
         <input type="text" id="fLongueur" placeholder="ex : 600" inputmode="decimal">
       </div>
@@ -526,6 +532,12 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
       </div>
       <div class="row2">
         <div class="field">
+          <label>Bobines par carton <span style="color:var(--muted);font-size:11px">ex : 3 = 3C, 4 = 4C</span></label>
+          <input type="text" id="fBobParCarton" placeholder="ex : 3" inputmode="numeric">
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
           <label>Étiquetage</label>
           <select id="fEtiquetage">
             <option value="">—</option>
@@ -564,10 +576,10 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
 
   <div style="padding:16px 0 8px">
     <div id="coupeeBanner" style="display:none;position:sticky;top:8px;z-index:50;margin-bottom:10px;padding:12px 14px;border-radius:10px;background:#1a1a18;border:1px solid var(--border2);font-size:14px;font-weight:600;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,.4)"></div>
-    <button id="sendPlanBtn" class="btn btn-green" style="width:100%;justify-content:center;font-size:15px;opacity:.4;cursor:not-allowed" onclick="sendEmailPlan()">
-      📧 Envoyer le plan par mail &amp; enregistrer
+    <button id="sendPlanBtn" class="btn btn-green" style="width:100%;justify-content:center;font-size:15px;opacity:.4;cursor:not-allowed" onclick="confirmCommande()">
+      ✓ Confirmer la commande &amp; enregistrer
     </button>
-    <div style="text-align:center;margin-top:6px;font-size:11px;color:var(--muted)" id="sendPlanHint">Marque toutes les bobines comme Coupées pour pouvoir envoyer</div>
+    <div style="text-align:center;margin-top:6px;font-size:11px;color:var(--muted)" id="sendPlanHint">Marque toutes les bobines comme Coupées pour pouvoir confirmer</div>
   </div>
 </div>
 
@@ -2047,11 +2059,14 @@ function recalcPlan(){
     const solde=useful-lst.total;
     const mother=parseNum(document.getElementById('motherWidth').value);
     const mn=getMachineLabel(currentMachine);
-    const etiqData={mn,decoupe:makeLabel(lastG.pattern),solde:fmt(solde),mother:fmt(mother),date:today()};
+    // Numéro de la bobine mère qui porte le solde = dernière bobine du plan
+    const totalBob=planGroups.reduce((s,g)=>s+g.count,0);
+    const numBob=totalBob; // la bobine solde est la dernière
+    const etiqData={mn,decoupe:makeLabel(lastG.pattern),solde:fmt(solde),mother:fmt(mother),date:today(),numBob};
     document.getElementById('etiquetteSolde').classList.remove('hidden');
     document.getElementById('etiquetteSolde').innerHTML=`<div class="etiquette-box">
       <strong>Étiquette solde</strong><br>
-      Machine : ${mn} · Découpe : ${makeLabel(lastG.pattern)}<br>
+      Machine : ${mn} · Bobine n° <strong>${numBob}/${totalBob}</strong> · Découpe : ${makeLabel(lastG.pattern)}<br>
       Solde : <strong>${fmt(solde)} mm</strong> · Bobine mère : ${fmt(mother)} mm · Date : ${today()}<br>
       <button class="btn btn-orange btn-sm" style="margin-top:10px" onclick='printEtiquette(${JSON.stringify(etiqData)})'>🖨️ Imprimer l'étiquette</button>
     </div>`;
@@ -2134,6 +2149,7 @@ function printEtiquette(d){
     <h2>ÉTIQUETTE SOLDE — STEP</h2>
     <div class="solde">${d.solde} mm</div>
     <div class="row"><b>Machine :</b> ${d.mn}</div>
+    ${d.numBob?`<div class="row"><b>Bobine n° :</b> ${d.numBob}</div>`:''}
     <div class="row"><b>Découpe :</b> ${d.decoupe}</div>
     <div class="row"><b>Bobine mère :</b> ${d.mother} mm</div>
     <div class="row"><b>Date :</b> ${d.date}</div>
@@ -2361,65 +2377,174 @@ function buildPlanName(){
   return `${ini}_${client}_${refShort}_${machine}_J${jour}`;
 }
 
-async function sendEmailPlan(){
+// Calcule l'écart entre le commandé (rows) et le réellement coupé (configs des bobines de la fiche).
+// Retourne {realCounts, deficit, surplus} par largeur.
+function computeEcarts(rows){
+  const commanded={};
+  rows.forEach(r=>{commanded[r.width]=(commanded[r.width]||0)+r.qty;});
+  // Réellement coupé = somme des configs de toutes les lignes fiche
+  const real={};
+  ficheLines.forEach(({id})=>{
+    const confEl=document.getElementById('flConf_'+id);
+    if(!confEl) return;
+    parseConf(confEl.value).forEach(p=>{real[p.width]=(real[p.width]||0)+p.qty;});
+  });
+  const widths=new Set([...Object.keys(commanded),...Object.keys(real)].map(Number));
+  const deficit={}, surplus={};
+  widths.forEach(w=>{
+    const c=commanded[w]||0, r=real[w]||0;
+    if(r<c) deficit[w]=c-r;       // il manque des bobinots
+    else if(r>c) surplus[w]=r-c;  // il y en a en trop
+  });
+  return {commanded,real,deficit,surplus};
+}
+
+// Construit une (ou des) bobine(s) de rattrapage optimisée(s) pour les déficits, via l'algo de pack existant.
+// Mode intermédiaire : tous les manquants regroupés, optimisés ensemble, perte affichée.
+function buildRattrapageGroups(deficit,useful,blade){
+  const items=[];
+  Object.entries(deficit).forEach(([w,q])=>{for(let i=0;i<q;i++) items.push(Number(w));});
+  if(!items.length) return [];
+  const bobines=pack(items.sort((a,b)=>b-a),useful,blade);
+  return groupBobines(bobines,blade);
+}
+
+async function confirmCommande(){
   const rows=getOrderRows();
-  if(!rows.length){alert('Aucune commande à envoyer.');return;}
+  if(!rows.length){alert('Aucune commande à confirmer.');return;}
   const useful=getUseful(),blade=getBlade();
-  // Blocage : laize plus large que l'utile (exclue du plan) → commande incohérente
   const over=rows.filter(r=>r.width>useful);
   if(over.length){
-    alert(`⛔ Envoi bloqué.\n\n${over.length} laize(s) dépassent la largeur utile (${fmt(useful)} mm) : ${over.map(r=>fmt(r.width)+' mm').join(', ')}.\nElles ne sont pas découpables et sont exclues du plan. Corrige la commande avant d'envoyer.`);
+    alert(`⛔ Confirmation bloquée.\n\n${over.length} laize(s) dépassent la largeur utile (${fmt(useful)} mm) : ${over.map(r=>fmt(r.width)+' mm').join(', ')}.\nCorrige la commande avant de confirmer.`);
     return;
   }
   if(ficheLines.length===0){
-    alert('⚠ La fiche est obligatoire avant d\'envoyer.\n\nVa dans l\'onglet Fiche : les bobines se chargent automatiquement depuis le plan. Coche-les "coupées" au fur et à mesure.');
+    alert('⚠ La fiche est obligatoire.\n\nVa dans l\'onglet Fiche : les bobines se chargent depuis le plan. Coche-les "coupées".');
     return;
   }
-  const bobines=pack(expandDemand(rows),useful,blade);
-  const groups=groupBobines(bobines,blade);
+  // Toutes les bobines doivent être coupées
   const total=ficheLines.length;
   const done=ficheLines.filter(({id})=>document.getElementById(id)?.classList.contains('coupee')).length;
   if(done<total){
-    alert(`⚠ ${total-done} bobine(s) non coupée(s) sur ${total}.\n\nMarque toutes les bobines comme "✓ Coupée" dans la fiche avant d'envoyer.`);
+    alert(`⚠ ${total-done} bobine(s) non coupée(s) sur ${total}.\n\nMarque toutes les bobines comme "✓ Coupée" avant de confirmer.`);
     return;
   }
-  // Garde-fou : NC cochée sans commentaire => bloquer
+  // Garde-fou NC sans détail
   const ficheCheck=getFicheLinesData();
   for(let i=0;i<ficheCheck.length;i++){
     const fd=ficheCheck[i];
     const hasNC=fd.ncLarg||fd.ncQty||fd.ncCasse||fd.ncAng;
     if(hasNC && !fd.ncDetail.trim()){
-      alert(`⚠ Bobine ${i+1}${fd.label?` (${fd.label})`:''} : une non-conformité est cochée sans explication.\n\nRenseigne le détail de la non-conformité avant d'envoyer (obligatoire pour la traçabilité qualité).`);
+      alert(`⚠ Bobine ${i+1}${fd.label?` (${fd.label})`:''} : non-conformité cochée sans explication.\n\nRenseigne le détail avant de confirmer.`);
       return;
     }
   }
+
+  // === RECALCUL DES ÉCARTS (déficit / surplus par largeur) ===
+  const ec=computeEcarts(rows);
+  const hasDeficit=Object.keys(ec.deficit).length>0;
+  const hasSurplus=Object.keys(ec.surplus).length>0;
+  const modifié=hasDeficit||hasSurplus;
+  let ecartLines=[];
+  Object.entries(ec.deficit).forEach(([w,q])=>ecartLines.push(`−${q}×${w}mm (manquant)`));
+  Object.entries(ec.surplus).forEach(([w,q])=>ecartLines.push(`+${q}×${w}mm (en trop)`));
+
+  if(modifié){
+    let msg='⚠ Écart détecté entre le plan et la découpe réelle :\n\n'+ecartLines.join('\n')+'\n\n';
+    if(hasDeficit) msg+='→ Une bobine de RATTRAPAGE va être ajoutée (plan + fiche) pour couper les manquants.\n';
+    if(hasSurplus) msg+='→ Le surplus sera déduit des bobines non encore coupées du même plan.\n';
+    msg+='\nLa fiche sera marquée « modifiée ». Confirmer ?';
+    if(!confirm(msg)) return;
+  }
+
+  // SURPLUS : déduire des bobines NON coupées du plan (P1)
+  if(hasSurplus){
+    applySurplusDeduction(ec.surplus);
+  }
+
+  // DÉFICIT : créer la/les bobine(s) de rattrapage dans la fiche ET dans le plan
+  if(hasDeficit){
+    const ratGroups=buildRattrapageGroups(ec.deficit,useful,blade);
+    // Dans la FICHE : ajouter les lignes de rattrapage (badge léger orange)
+    let ri=1;
+    ratGroups.forEach(g=>{
+      for(let ci=0;ci<g.count;ci++){
+        addFicheLine({label:'RATTRAPAGE-'+String(ri).padStart(2,'0'),conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + '),rattrapage:true});
+        ri++;
+      }
+    });
+    // Dans le PLAN : ajouter les manquants comme lignes de commande supplémentaires
+    Object.entries(ec.deficit).forEach(([w,q])=>{ addOrderRow(q,Number(w)); });
+    recalcPlan();
+    refreshOp2BobineList();
+    alert('✓ Bobine(s) de rattrapage ajoutée(s) dans la fiche et le plan.\n\nL\'opérateur peut maintenant couper le rattrapage, puis re-confirmer.');
+    // On NE sauvegarde pas tout de suite : l'opérateur doit couper le rattrapage et reconfirmer.
+    return;
+  }
+
+  // === Pas de déficit (ou surplus seul) → on enregistre la fiche ===
+  await saveCommandeFiche(rows,useful,blade,{modifié,ecartLines});
+}
+
+// Applique la déduction d'un surplus sur les bobines NON coupées du plan (P1)
+function applySurplusDeduction(surplus){
+  const rem={...surplus}; // largeurs à déduire
+  // Parcourir les lignes fiche non coupées, retirer des bobinots de la config
+  for(let i=ficheLines.length-1;i>=0 && Object.keys(rem).length;i--){
+    const {id}=ficheLines[i];
+    const el=document.getElementById(id);
+    if(!el || el.classList.contains('coupee')) continue; // que les non coupées
+    const confEl=document.getElementById('flConf_'+id);
+    if(!confEl) continue;
+    let pieces=parseConf(confEl.value);
+    let changed=false;
+    pieces=pieces.map(p=>{
+      if(rem[p.width]>0){
+        const cut=Math.min(rem[p.width],p.qty);
+        p.qty-=cut; rem[p.width]-=cut; changed=true;
+        if(rem[p.width]<=0) delete rem[p.width];
+      }
+      return p;
+    }).filter(p=>p.qty>0);
+    if(changed){
+      confEl.value=pieces.map(p=>p.qty+'×'+p.width).join(' + ');
+    }
+  }
+  updateAllCumuls();
+}
+
+// Enregistre la fiche confirmée dans Firestore (sans mail), puis reset → Plan vierge
+async function saveCommandeFiche(rows,useful,blade,opts){
+  opts=opts||{};
+  const bobines=pack(expandDemand(rows),useful,blade);
+  const groups=groupBobines(bobines,blade);
   const nbPlan=bobines.length;
   const nbFiche=ficheLines.length;
-  const hasEcart=nbFiche!==nbPlan;
-  const ecartMsg=nbFiche>nbPlan
-    ? `+${nbFiche-nbPlan} bobine(s) coupée(s) en plus du plan`
-    : nbFiche<nbPlan
-      ? `-${nbPlan-nbFiche} bobine(s) coupée(s) en moins que le plan`
-      : '';
+  const hasEcart=opts.modifié||(nbFiche!==nbPlan);
+  const ecartMsg=(opts.ecartLines&&opts.ecartLines.length)?opts.ecartLines.join(' ; '):
+    (nbFiche>nbPlan?`+${nbFiche-nbPlan} bobine(s) en plus`:nbFiche<nbPlan?`-${nbPlan-nbFiche} bobine(s) en moins`:'');
 
-  const client=document.getElementById('planClient').value||document.getElementById('fClient').value||'—';
-  const ref=document.getElementById('planRef').value||document.getElementById('fRef').value||'—';
-  const ini=document.getElementById('fInitiales').value||'—';
-  const ini2=document.getElementById('fOp2Active').checked?(document.getElementById('fInitiales2').value||'—'):'';
-  const op2Bob=document.getElementById('fOp2Active').checked?(document.getElementById('fOp2Bobine').value||''):'';
+  const g=id=>document.getElementById(id);
+  const client=g('planClient').value||g('fClient').value||'—';
+  const ref=g('planRef').value||g('fRef').value||'—';
+  const ini=g('fInitiales').value||'—';
+  const ini2=g('fOp2Active').checked?(g('fInitiales2').value||'—'):'';
+  const op2Bob=g('fOp2Active').checked?(g('fOp2Bobine').value||''):'';
   const machine=getMachineLabel(ficheMachine);
-  const lame=document.getElementById('fNumLame').value||'—';
-  const numJour=document.getElementById('fNumJour').value||'—';
-  const longueur=document.getElementById('fLongueur').value||document.getElementById('planLongueur').value||'—';
-  const mother=fmt(parseNum(document.getElementById('motherWidth').value));
-  const typeCond=document.getElementById('fType').value||document.getElementById('planType').value||'—';
-  const palette=document.getElementById('fPalette').value||document.getElementById('planPalette').value||'—';
-  const etiquetage=document.getElementById('fEtiquetage').value||document.getElementById('planEtiquetage').value||'—';
-  const cerclage=document.getElementById('fCerclage').value||document.getElementById('planCerclage').value||'—';
-  const notesEmb=document.getElementById('fNotesEmballage').value||document.getElementById('planNotesEmballage').value||'';
-  const numCmd=document.getElementById('fNumCmd').value||document.getElementById('planNumCmd').value||'—';
-  const dateLivRaw=document.getElementById('fDateLiv').value||document.getElementById('planDateLiv').value;
+  const lame=g('fNumLame').value||'—';
+  const numJour=g('fNumJour').value||'—';
+  const longueur=g('fLongueur').value||g('planLongueur').value||'—';
+  const mother=fmt(parseNum(g('motherWidth').value));
+  const typeCond=g('fType').value||g('planType').value||'—';
+  const palette=g('fPalette').value||g('planPalette').value||'—';
+  const etiquetage=g('fEtiquetage').value||g('planEtiquetage').value||'—';
+  const cerclage=g('fCerclage').value||g('planCerclage').value||'—';
+  const notesEmb=g('fNotesEmballage').value||g('planNotesEmballage').value||'';
+  const numCmd=g('fNumCmd').value||g('planNumCmd').value||'—';
+  const dateLivRaw=g('fDateLiv').value||g('planDateLiv').value;
   const dateLiv=dateLivRaw?new Date(dateLivRaw).toLocaleDateString('fr-FR'):'—';
+  const bobParCarton=g('fBobParCarton')?(g('fBobParCarton').value||''):'';
+  const numLot=g('fNumLot')?(g('fNumLot').value||''):'';
   const totalMat=bobines.length*useful;
   const totalUsed=bobines.reduce((s,p)=>s+calcStats(p,blade).total,0);
   const pct=totalMat>0?((totalMat-totalUsed)/totalMat*100):0;
@@ -2427,72 +2552,20 @@ async function sendEmailPlan(){
     ?`${fmtTimeFr(chronoSec)} (${ini} — ${today()})`
     :(()=>{const m=tempsCache.find(t=>t.client===client && t.ref===ref);return m?`${fmtTimeFr(m.duree)} (${m.operateur} — ${new Date(m.date).toLocaleDateString('fr-FR')})`:'non enregistré';})();
 
-  // Récupération données fiche
   const ficheData=getFicheLinesData();
-
   const planName=buildPlanName();
-
-  // === CORPS DU MAIL — VERSION COMPACTE (pour rentrer dans URL Gmail) ===
-  let body=`PLAN DE DÉCOUPE — STEP International — ${today()}\n`;
-  body+=`Plan : ${planName}\n\n`;
-  body+=`== EN-TÊTE ==\n`;
-  body+=`Op1: ${ini}${ini2?` / Op2: ${ini2}${op2Bob?` (dès B${op2Bob})`:''}`:''}\n`;
-  body+=`Client: ${client} | Ref: ${ref} | Long: ${longueur} m\n`;
-  body+=`N° Commande: ${numCmd} | Livraison client: ${dateLiv}\n`;
-  body+=`Machine: ${machine} | Mere: ${mother} mm | Utile: ${fmt(useful)} | Lame: ${fmt(blade)} (N°${lame}) | J${numJour}\n`;
-  body+=`Emballage: Palette ${palette} | ${typeCond} | Etiq ${etiquetage} | Cerc ${cerclage}\n`;
-  if(notesEmb) body+=`Notes: ${notesEmb.replace(/\n/g,' | ')}\n`;
-  body+=`Temps: ${tempsStr}\n\n`;
-
-  body+=`== COMMANDE ==\n`;
-  body+=rows.map(r=>`${r.qty}x${r.width}`).join(' + ')+`\n\n`;
-
-  body+=`== PLAN THEORIQUE (${nbPlan} bob, perte ${pct.toFixed(1)}%) ==\n`;
-  groups.forEach((g,gi)=>{
-    const st=calcStats(g.pattern,blade);
-    const waste=useful-st.total;
-    const label=makeLabel(g.pattern);
-    const soldeTag=gi===groups.length-1?' [SOLDE]':'';
-    body+=`${g.count}x ${label} (tot ${fmt(st.total)} mm, chute ${fmt(waste)} mm)${soldeTag}\n`;
-  });
-  body+=`\n`;
-
-  body+=`== FICHE TERRAIN (${nbFiche} bob coupees) ==\n`;
-  if(hasEcart) body+=`>>> ECART: ${ecartMsg} <<<\n`;
-  ficheData.forEach((fd,i)=>{
-    const bn=i+1;
-    const horsPlan=bn>nbPlan;
-    const ncs=[];
-    if(fd.ncLarg) ncs.push('Larg');
-    if(fd.ncQty) ncs.push('Qty');
-    if(fd.ncCasse) ncs.push('Casse');
-    if(fd.ncAng) ncs.push('Ang');
-    const ncStr=ncs.length?` NC:${ncs.join(',')}`:'';
-    const ncDet=fd.ncDetail?` (${fd.ncDetail})`:'';
-    const act=fd.actDechet?' DECHET':fd.actChutes?' CHUTES':'';
-    const photo=fd.photo?' [P]':'';
-    const cut=fd.coupee?'OK':'NC';
-    const tests=(fd.devi&&fd.droit)?' T2M:OK':'';
-    const lbl=fd.label?`[${fd.label}] `:'';
-    const hp=horsPlan?' *HORS PLAN*':'';
-    body+=`B${String(bn).padStart(2,'0')} ${lbl}${fd.conf||'?'} - ${cut}${ncStr}${ncDet}${act}${tests}${photo}${hp}\n`;
-  });
-  body+=`\n-- Fin --`;
-
-  // Marquer chaque ligne fiche avec horsPlan
   const ficheDetailTagged=ficheData.map((fd,i)=>({...fd,horsPlan:(i+1)>nbPlan}));
 
   const ficheEntry={
     name:planName,date:isoNow(),client,ref,ini,ini2,op2Bob,machine,lame,numJour,longueur,mother,rows,
-    numCmd,dateLiv,deleted:false,
+    numCmd,dateLiv,deleted:false,bobParCarton,numLot,
     palette,typeCond,etiquetage,cerclage,notesEmballage:notesEmb,
-    groups:groups.map(g=>({label:makeLabel(g.pattern),count:g.count,total:fmt(calcStats(g.pattern,blade).total),waste:fmt(useful-calcStats(g.pattern,blade).total),isLast:false})),
+    groups:groups.map(gp=>({label:makeLabel(gp.pattern),count:gp.count,total:fmt(calcStats(gp.pattern,blade).total),waste:fmt(useful-calcStats(gp.pattern,blade).total),isLast:false})),
     useful:fmt(useful),blade:fmt(blade),pct:pct.toFixed(1),tempsStr,totalBobines:bobines.length,
     ficheDetail:ficheDetailTagged,
-    nbPlan,nbFiche,hasEcart,ecartMsg,
+    nbPlan,nbFiche,hasEcart,ecartMsg,modifie:!!opts.modifié,
     valide:null,valideBy:null,valideAt:null
   };
-  // Temps (seulement si le chrono a tourné)
   let tempsEntry=null;
   if(chronoSec>0){
     const totalLaizes=rows.reduce((s,r)=>s+r.qty,0);
@@ -2502,14 +2575,11 @@ async function sendEmailPlan(){
       machine,client,ref,rows,numCmd,deleted:false,
       commandeDetail:rows.map(r=>`${r.qty}×${r.width}mm`).join(' + '),
       totalLaizes,nbBobines:bobines.length,
-      largeur:document.getElementById('planLargeur')?.value||'',
-      longueur:document.getElementById('planLongueur')?.value||'',
-      numJour:document.getElementById('fNumJour')?.value||'',
-      commentaire:''
+      largeur:g('planLargeur')?.value||'',longueur:g('planLongueur')?.value||'',
+      numJour:g('fNumJour')?.value||'',commentaire:''
     };
   }
 
-  // === ÉCRITURE ATOMIQUE (fiche + temps) — les deux ou aucune ===
   if(db){
     try{
       const batch=db.batch();
@@ -2518,47 +2588,25 @@ async function sendEmailPlan(){
       let tempsRef=null;
       if(tempsEntry){tempsRef=db.collection('temps').doc();batch.set(tempsRef,tempsEntry);}
       await batch.commit();
-      // Caches + audit seulement après succès
       fichesCache.unshift({_id:ficheRef.id,...ficheEntry});
       if(fichesCache.length>1000) fichesCache=fichesCache.slice(0,1000);
       if(tempsRef){tempsCache.unshift({_id:tempsRef.id,...tempsEntry});if(tempsCache.length>2000) tempsCache=tempsCache.slice(0,2000);}
-      await logAudit('create','fiches',ficheRef.id,`${client||''} / ${ref||''}${numCmd&&numCmd!=='—'?' / Cmd '+numCmd:''}`);
-      clearCurrentDraft();
+      await logAudit('create','fiches',ficheRef.id,`${client||''} / ${ref||''}${numCmd&&numCmd!=='—'?' / Cmd '+numCmd:''}${opts.modifié?' [MODIFIÉE]':''}`);
       chronoReset();
     }catch(e){
-      // Échec réseau : on garde le formulaire et on sauvegarde un brouillon local
-      saveDraftFromSend(ficheEntry,tempsEntry,body);
-      alert('⚠ Enregistrement impossible (réseau ?).\n\nLa fiche a été placée en BROUILLON (Données > Brouillons). Reconnecte-toi puis renvoie-la depuis les brouillons.\n\nDétail : '+e.message);
+      saveDraftFromSend(ficheEntry,tempsEntry,'');
+      alert('⚠ Enregistrement impossible (réseau ?).\n\nLa fiche a été placée en BROUILLON (Données > Brouillons). Reconnecte-toi puis renvoie-la.\n\nDétail : '+e.message);
       return;
     }
   } else {
-    saveDraftFromSend(ficheEntry,tempsEntry,body);
-    alert('⚠ Base de données indisponible. Fiche placée en BROUILLON (Données > Brouillons).');
+    saveDraftFromSend(ficheEntry,tempsEntry,'');
+    alert('⚠ Base de données indisponible. Fiche placée en BROUILLON.');
     return;
   }
 
-  // === ENVOI : tente URL Gmail directe, fallback presse-papier si trop long ===
-  const subject=encodeURIComponent(planName);
-  const bodyEnc=encodeURIComponent(body);
-  const gmailUrlFull=`https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(MAIL_DESTINATAIRE)}&su=${subject}&body=${bodyEnc}`;
-  const gmailUrlEmpty=`https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(MAIL_DESTINATAIRE)}&su=${subject}`;
-  // Gmail accepte ~2000 chars d'URL. On laisse 200 de marge.
-  if(gmailUrlFull.length<1800){
-    window.open(gmailUrlFull,'_blank');
-  } else {
-    if(navigator.clipboard&&navigator.clipboard.writeText){
-      navigator.clipboard.writeText(body).then(()=>{
-        alert('📋 Plan trop long pour l\'URL Gmail — copié dans le presse-papier.\n\nDans le mail Gmail qui s\'ouvre, fais Cmd+V (ou Ctrl+V) pour coller le plan.');
-        window.open(gmailUrlEmpty,'_blank');
-      }).catch(()=>{promptCopy(body);window.open(gmailUrlEmpty,'_blank');});
-    } else {
-      promptCopy(body);
-      window.open(gmailUrlEmpty,'_blank');
-    }
-  }
-
-  // Reset complet après envoi réussi — prêt pour la commande suivante
-  setTimeout(function(){ resetAll(); }, 500);
+  alert('✓ Commande confirmée et enregistrée dans Données'+(opts.modifié?' (fiche marquée modifiée)':'')+'.');
+  // Reset complet → Plan vierge
+  setTimeout(function(){ resetAll(); }, 300);
 }
 
 function promptCopy(text){
@@ -2610,6 +2658,8 @@ function resetAll(){
   const fdl=document.getElementById('fDateLiv');if(fdl)fdl.value='';
   document.getElementById('fNumLame').value='';
   document.getElementById('fNumJour').value=getDayOfYear();
+  const fLot=document.getElementById('fNumLot');if(fLot)fLot.value='';
+  const fBpc=document.getElementById('fBobParCarton');if(fBpc)fBpc.value='';
   document.getElementById('fLongueur').value='';
   ['fPalette','fType','fEtiquetage','fCerclage'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
   const fNotes=document.getElementById('fNotesEmballage');if(fNotes)fNotes.value='';
@@ -3310,11 +3360,12 @@ function renderFiches(){
       <button class="fc-btn fc-btn-blue" onclick="editFicheConfigs('${f._id}')" title="Modifier">✏ Modifier</button>
       <button class="fc-btn fc-btn-green" onclick="validateFiche('${f._id}')" title="Valider">✓ Valider</button>
       <button class="fc-btn fc-btn-red" onclick="rejectFiche('${f._id}')" title="Refuser">✗ Refuser</button>`:'';
-    return `<div class="fiche-card">
+    return `<div class="fiche-card"${f.modifie?' style="border-color:#caa15a"':''}>
       <div class="fc-header">
         <div class="fc-title">${esc(f.name)}</div>
         <div class="fc-status" style="${statusColor}">${statusBadge}</div>
       </div>
+      ${f.modifie?`<div style="margin:6px 0;padding:6px 10px;border-radius:8px;background:rgba(245,158,11,0.10);border:1px solid #caa15a;color:#d9a441;font-size:12px;font-weight:600">⚠ Modifiée${f.ecartMsg?` — ${esc(f.ecartMsg)}`:''}</div>`:''}
       ${numCmdHas?`<div class="fc-cmd"><span class="fc-cmd-badge">N° ${esc(f.numCmd)}</span>${f.dateLiv&&f.dateLiv!=='—'?`<span class="fc-cmd-liv">📅 Livr. ${esc(f.dateLiv)}</span>`:''}</div>`:''}
       <div class="fc-grid">
         <div class="fc-cell"><span class="fc-lbl">Client</span><span class="fc-val">${esc(f.client||'—')}</span></div>
@@ -3325,10 +3376,9 @@ function renderFiches(){
         <div class="fc-cell"><span class="fc-lbl">Perte</span><span class="fc-val" style="color:${parseFloat(f.pct)<3?'#4ade80':parseFloat(f.pct)<8?'#f59e0b':'#f87171'}">${f.pct}%</span></div>
       </div>
       <div class="fc-cmdline">${cmd||'—'}</div>
-      ${pkg?`<div class="fc-pkg">📦 ${esc(pkg)}</div>`:''}
+      ${pkg?`<div class="fc-pkg">📦 ${esc(pkg)}${f.bobParCarton?` · ${esc(f.bobParCarton)}C`:''}${f.numLot?` · Lot ${esc(f.numLot)}`:''}</div>`:''}
       <div class="fc-foot">${ds} · ⏱ ${esc(f.tempsStr||'—')}</div>
       <div class="fc-actions">
-        <button class="fc-btn fc-btn-ghost" onclick="showFicheDetail('${f._id}')">👁 Voir</button>
         <button class="fc-btn fc-btn-ghost" onclick="showFicheDetail('${f._id}',true)">📄 PDF</button>
         ${validBtns}
         <button class="fc-btn fc-btn-red-ghost" onclick="deleteFiche('${f._id}')">🗑 Archiver</button>
@@ -3635,7 +3685,8 @@ function showFicheDetail(id,autoPrint){
     </div>`:'';
 
   const op2Line=f.ini2?`<span>Opérateur 2</span><span>${f.ini2}${f.op2Bob?` — repris dès la bobine ${f.op2Bob}`:''}</span>`:'';
-  const pkgLine=`<span>Packaging</span><span>Palette ${f.palette||'—'} · Type ${f.typeCond||f.carton||'—'} · Étiquetage ${f.etiquetage||f.etiquette||'—'} · Cerclage ${f.cerclage||'—'}</span>`;
+  const pkgLine=`<span>Packaging</span><span>Palette ${f.palette||'—'} · Type ${f.typeCond||f.carton||'—'}${f.bobParCarton?` · ${esc(f.bobParCarton)} bobines/carton (${esc(f.bobParCarton)}C)`:''} · Étiquetage ${f.etiquetage||f.etiquette||'—'} · Cerclage ${f.cerclage||'—'}</span>`;
+  const lotLine=f.numLot?`<span>N° de lot</span><span>${esc(f.numLot)}</span>`:'';
   const notesLine=(f.notesEmballage&&f.notesEmballage.trim())?`<span>Notes condit.</span><span style="white-space:pre-line">${esc(f.notesEmballage)}</span>`:'';
 
   const html=`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
@@ -3680,6 +3731,7 @@ function showFicheDetail(id,autoPrint){
       <span>Longueur réf.</span><span>${f.longueur} m</span>
       <span>Lame N°</span><span>${f.lame}</span>
       <span>N° Jour</span><span>${f.numJour}</span>
+      ${lotLine}
       ${pkgLine}
       ${notesLine}
       <span>Temps</span><span style="color:${f.tempsStr==='non enregistré'?'#888':'#4ade80'}">${f.tempsStr}</span>
@@ -3996,10 +4048,11 @@ function getMachineLabel(m){return {feba:'FEBA',maveg:'MAVEG',cevenini:'CEVENINI
 
 function addFicheLine(data){
   const id='fl_'+Date.now()+'_'+Math.floor(Math.random()*9999);
-  ficheLines.push({id});
   data=data||{};
+  ficheLines.push({id,rattrapage:!!data.rattrapage});
   const div=document.createElement('div');
   div.className='fiche-line';div.id=id;
+  if(data.rattrapage){ div.style.borderColor='#caa15a'; div.style.background='rgba(245,158,11,0.05)'; }
   div.innerHTML=`
     <div class="fiche-line-header">
       <button id="coupeeBtn_${id}" onclick="toggleCoupee('${id}')"
@@ -4132,7 +4185,7 @@ function updateCoupeeStatus(){
     banner.style.display='block';
     if(allDone){
       banner.style.background='#14371f';banner.style.borderColor='var(--green)';banner.style.color='var(--green)';
-      banner.innerHTML=`✅ Toutes les bobines sont coupées (${total}/${total}) — prêt à envoyer`;
+      banner.innerHTML=`✅ Toutes les bobines sont coupées (${total}/${total}) — prêt à confirmer`;
     } else {
       banner.style.background='#1a1a18';banner.style.borderColor='var(--border2)';banner.style.color='var(--muted)';
       banner.innerHTML=`✂ Progression : <strong style="color:var(--text)">${done}/${total}</strong> bobines coupées`;
@@ -4222,6 +4275,7 @@ function serializeFicheState(){
       etiquetage:g('planEtiquetage')?.value||'',cerclage:g('planCerclage')?.value||'',notes:g('planNotesEmballage')?.value||'',rows:getOrderRows()},
     fiche:{machine:ficheMachine,ini:g('fInitiales')?.value||'',ini2:g('fInitiales2')?.value||'',op2Active:g('fOp2Active')?.checked||false,op2Bob:g('fOp2Bobine')?.value||'',
       lame:g('fNumLame')?.value||'',numJour:g('fNumJour')?.value||'',longueur:g('fLongueur')?.value||'',client:g('fClient')?.value||'',ref:g('fRef')?.value||'',
+      numLot:g('fNumLot')?.value||'',bobParCarton:g('fBobParCarton')?.value||'',
       numCmd:g('fNumCmd')?.value||'',dateLiv:g('fDateLiv')?.value||'',type:g('fType')?.value||'',palette:g('fPalette')?.value||'',etiquetage:g('fEtiquetage')?.value||'',cerclage:g('fCerclage')?.value||'',notes:g('fNotesEmballage')?.value||''},
     lines:getFicheLinesData()
   };
@@ -4300,6 +4354,7 @@ function restoreFicheState(st){
   setV('fNumLame',st.fiche.lame);setV('fNumJour',st.fiche.numJour);setV('fLongueur',st.fiche.longueur);
   setV('fClient',st.fiche.client);setV('fRef',st.fiche.ref);setV('fNumCmd',st.fiche.numCmd);setV('fDateLiv',st.fiche.dateLiv);
   setV('fType',st.fiche.type);setV('fPalette',st.fiche.palette);setV('fEtiquetage',st.fiche.etiquetage);setV('fCerclage',st.fiche.cerclage);setV('fNotesEmballage',st.fiche.notes);
+  setV('fNumLot',st.fiche.numLot||'');setV('fBobParCarton',st.fiche.bobParCarton||'');
   if(st.fiche.ini){selectedIni=st.fiche.ini;document.querySelectorAll('#initBtns .ini-btn').forEach(b=>b.classList.toggle('sel',b.textContent===st.fiche.ini));}
   if(g('fOp2Active')){g('fOp2Active').checked=!!st.fiche.op2Active;toggleOp2();}
   document.getElementById('ficheLines').innerHTML='';ficheLines=[];
