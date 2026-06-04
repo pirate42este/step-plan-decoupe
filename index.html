@@ -957,12 +957,12 @@ async function showForgotPassword(){
   }
   try{
     await firebase.auth().sendPasswordResetEmail(email);
-    document.getElementById('loginErr').textContent='✓ Lien de réinitialisation envoyé à '+email+'. Vérifie tes e-mails.';
+    document.getElementById('loginErr').textContent='✓ Lien envoyé à '+email+'. Vérifie ta boîte mail ET tes spams (expéditeur noreply@).';
     document.getElementById('loginErr').style.color='var(--green)';
     setTimeout(()=>{
       document.getElementById('loginErr').style.color='var(--red)';
       document.getElementById('loginErr').textContent='';
-    },5000);
+    },8000);
   }catch(e){
     if(e.code==='auth/user-not-found'){
       document.getElementById('loginErr').textContent='Cet e-mail n\'existe pas.';
@@ -1476,7 +1476,7 @@ let commandTotals = {};
 let ficheLines = [];
 let loadTargetIdx = null;
 let photoTargetId = null; // pour savoir quelle bobine reçoit la photo
-const ficholinePhotos = {}; // id -> Storage URL (ou ancien base64)
+let ficholinePhotos = {}; // id -> Storage URL (ou ancien base64)
 
 // CHRONO
 let chronoSec = 0;
@@ -1637,7 +1637,9 @@ function closePhotoViewer(){
 function showPage(i){
   document.querySelectorAll('.page').forEach((p,idx)=>p.classList.toggle('active',idx===i));
   document.querySelectorAll('#nav button').forEach((b,idx)=>b.classList.toggle('active',idx===i));
-  // Synchro Plan→Fiche : retirée. Désormais explicite via bouton "→ Créer / Mettre à jour la fiche" dans le Plan.
+  // Au passage sur la Fiche : import auto depuis le Plan (silencieux, ne touche pas si déjà travaillé).
+  // Le bouton "→ Créer / Mettre à jour la fiche" fait la même chose en mode interactif.
+  if(i===1) importPlanToFiche({auto:true});
   if(i===2) renderDataPage();
 }
 
@@ -1674,30 +1676,35 @@ function isFicheUntouched(){
   return true;
 }
 
-function importPlanToFiche(){
+function importPlanToFiche(opts){
+  // opts.auto === true : appelé automatiquement au passage Plan→Fiche (silencieux, pas de bascule, pas d'alerte bloquante)
+  // sinon : clic explicite sur le bouton (confirmations + bascule + toast)
+  opts=opts||{};
+  const auto=!!opts.auto;
   try{
-    // Vérifs préalables sur le Plan
     const rows=getOrderRows();
     if(!rows.length){
-      alert('⚠ Aucune ligne de commande dans le Plan.\n\nRemplis le plan d\'abord puis clique à nouveau sur ce bouton.');
+      if(!auto) alert('⚠ Aucune ligne de commande dans le Plan.\n\nRemplis le plan d\'abord.');
       return;
     }
     const useful=getUseful(),blade=getBlade();
     const tooWide=rows.some(r=>r.width>useful);
     if(tooWide){
-      alert('⚠ Une largeur dépasse la largeur utile ('+useful+' mm).\n\nCorrige le plan avant d\'importer dans la fiche.');
+      if(!auto) alert('⚠ Une largeur dépasse la largeur utile ('+useful+' mm).\n\nCorrige le plan avant d\'importer dans la fiche.');
       return;
     }
 
-    // Si l'opérateur a déjà commencé à travailler dans la Fiche, confirmation obligatoire
+    // Si l'opérateur a déjà commencé à travailler dans la Fiche :
+    // - en auto : on ne touche À RIEN (protège le travail terrain)
+    // - au clic : confirmation avant d'écraser
     if(!isFicheUntouched()){
+      if(auto) return;
       const ok=confirm('⚠ La fiche contient déjà des saisies (bobines coupées, photos, NC, etc.).\n\n'+
-                       'Cliquer OK va TOUT EFFACER et regénérer la fiche depuis le Plan.\n\n'+
-                       'Continuer ?');
+                       'Cliquer OK va TOUT EFFACER et regénérer la fiche depuis le Plan.\n\nContinuer ?');
       if(!ok) return;
     }
 
-    // En-têtes : copie depuis le Plan (écrase ce qu'il y a dans la Fiche)
+    // En-têtes : copie depuis le Plan
     const copy=(planId,ficheId)=>{
       const p=document.getElementById(planId), f=document.getElementById(ficheId);
       if(p&&f) f.value=p.value||'';
@@ -1729,12 +1736,13 @@ function importPlanToFiche(){
     });
     refreshOp2BobineList();
 
-    // Bascule automatique vers la Fiche
-    showPage(1);
-    showToast('✓ Fiche créée — '+ficheLines.length+' bobine(s) à découper','ok');
+    if(!auto){
+      showPage(1);
+      showToast('✓ Fiche créée — '+ficheLines.length+' bobine(s) à découper','ok');
+    }
   }catch(e){
     console.error('importPlanToFiche a échoué :',e);
-    alert('Erreur lors de l\'import : '+(e.message||e)+'\n\nRecharge la page et réessaie.');
+    if(!auto) alert('Erreur lors de l\'import : '+(e.message||e)+'\n\nRecharge la page et réessaie.');
   }
 }
 
@@ -3255,7 +3263,6 @@ function renderFiches(){
       <button class="fc-btn fc-btn-blue" onclick="editFicheConfigs('${f._id}')" title="Modifier">✏ Modifier</button>
       <button class="fc-btn fc-btn-green" onclick="validateFiche('${f._id}')" title="Valider">✓ Valider</button>
       <button class="fc-btn fc-btn-red" onclick="rejectFiche('${f._id}')" title="Refuser">✗ Refuser</button>`:'';
-    const cmdBtn=numCmdHas?`<button class="fc-btn fc-btn-violet" onclick="showCommandeRecap('${String(f.numCmd).replace(/'/g,"\\'")}')">📦 Dossier cmd</button>`:'';
     return `<div class="fiche-card">
       <div class="fc-header">
         <div class="fc-title">${esc(f.name)}</div>
@@ -3276,7 +3283,6 @@ function renderFiches(){
       <div class="fc-actions">
         <button class="fc-btn fc-btn-ghost" onclick="showFicheDetail('${f._id}')">👁 Voir</button>
         <button class="fc-btn fc-btn-ghost" onclick="showFicheDetail('${f._id}',true)">📄 PDF</button>
-        ${cmdBtn}
         ${validBtns}
         <button class="fc-btn fc-btn-red-ghost" onclick="deleteFiche('${f._id}')">🗑 Archiver</button>
       </div>
