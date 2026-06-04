@@ -340,7 +340,7 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
       </div>
       <div class="field">
         <label>Type conditionnement</label>
-        <select id="planType">
+        <select id="planType" onchange="updateCartonVisibility()">
           <option value="">—</option>
           <option value="Caisse">Caisse</option>
           <option value="Pyramide">Pyramide</option>
@@ -396,7 +396,6 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
       <button class="btn btn-green btn-sm" onclick="importPlanToFiche()">→ Créer / Mettre à jour la fiche</button>
     </div>
     <div id="planCards"></div>
-    <div id="etiquetteSolde" class="hidden"></div>
   </div>
 </div>
 
@@ -456,12 +455,6 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
       <div class="field">
         <label>N° Jour</label>
         <input type="text" id="fNumJour" inputmode="numeric">
-      </div>
-    </div>
-    <div class="row2">
-      <div class="field">
-        <label>N° de lot <span style="color:var(--muted);font-size:11px">à compléter à la main</span></label>
-        <input type="text" id="fNumLot" placeholder="ex : LOT-2026-0142" inputmode="text">
       </div>
     </div>
     <div class="row2">
@@ -532,12 +525,6 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
       </div>
       <div class="row2">
         <div class="field">
-          <label>Bobines par carton <span style="color:var(--muted);font-size:11px">ex : 3 = 3C, 4 = 4C</span></label>
-          <input type="text" id="fBobParCarton" placeholder="ex : 3" inputmode="numeric">
-        </div>
-      </div>
-      <div class="row2">
-        <div class="field">
           <label>Étiquetage</label>
           <select id="fEtiquetage">
             <option value="">—</option>
@@ -573,6 +560,17 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
   </div>
 
   <div id="ficheLines"></div>
+
+  <div class="section" id="etiquetteSoldeFiche" style="margin-top:6px">
+    <div class="section-title">🏷️ Étiquette solde — bobine mère restante</div>
+    <div id="etiquetteSoldeInfo" style="font-size:13px;line-height:1.8;color:var(--muted);margin-bottom:10px">—</div>
+    <div class="field">
+      <label>N° de la bobine mère <span style="color:var(--orange);font-size:11px">obligatoire pour imprimer</span></label>
+      <input type="text" id="etiqNumMere" placeholder="ex : 11" inputmode="text" oninput="updateEtiquetteBtn()">
+    </div>
+    <button class="btn btn-orange" id="etiqPrintBtn" style="width:100%;justify-content:center;opacity:.4;cursor:not-allowed" onclick="printEtiquetteSolde()">🖨️ Imprimer l'étiquette solde</button>
+    <div style="text-align:center;margin-top:6px;font-size:11px;color:var(--muted)" id="etiqHint">Saisis le n° de la bobine mère pour activer l'impression</div>
+  </div>
 
   <div style="padding:16px 0 8px">
     <div id="coupeeBanner" style="display:none;position:sticky;top:8px;z-index:50;margin-bottom:10px;padding:12px 14px;border-radius:10px;background:#1a1a18;border:1px solid var(--border2);font-size:14px;font-weight:600;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,.4)"></div>
@@ -1489,6 +1487,7 @@ function applyPackagingRules(clientName){
   } else {
     alertEl.classList.add('hidden');
   }
+  updateCartonVisibility();
 }
 
 // ============================================================
@@ -1532,6 +1531,7 @@ let planGroups = [];
 let planChecked = [];
 let planOversize = [];
 let commandTotals = {};
+let cartonByWidth = {};
 let ficheLines = [];
 let loadTargetIdx = null;
 let photoTargetId = null; // pour savoir quelle bobine reçoit la photo
@@ -1698,7 +1698,7 @@ function showPage(i){
   document.querySelectorAll('#nav button').forEach((b,idx)=>b.classList.toggle('active',idx===i));
   // Au passage sur la Fiche : import auto depuis le Plan (silencieux, ne touche pas si déjà travaillé).
   // Le bouton "→ Créer / Mettre à jour la fiche" fait la même chose en mode interactif.
-  if(i===1) importPlanToFiche({auto:true});
+  if(i===1){ importPlanToFiche({auto:true}); refreshEtiquetteSolde(); }
   if(i===2) renderDataPage();
 }
 
@@ -1784,7 +1784,8 @@ function importPlanToFiche(opts){
 
     // Régénération depuis le Plan
     commandTotals={};
-    rows.forEach(r=>{commandTotals[r.width]=(commandTotals[r.width]||0)+r.qty;});
+    cartonByWidth={};
+    rows.forEach(r=>{commandTotals[r.width]=(commandTotals[r.width]||0)+r.qty; if(r.carton>0) cartonByWidth[r.width]=r.carton;});
     const groups=groupBobines(pack(expandDemand(rows),useful,blade),blade);
     let bi=1;
     groups.forEach(g=>{
@@ -1794,6 +1795,7 @@ function importPlanToFiche(opts){
       }
     });
     refreshOp2BobineList();
+    refreshEtiquetteSolde();
 
     if(!auto){
       showPage(1);
@@ -1890,20 +1892,37 @@ function getOrderRows(){
   document.querySelectorAll('.order-row').forEach(row=>{
     const qty=Math.floor(parseNum(row.querySelector('[data-type="qty"]').value));
     const w=parseNum(row.querySelector('[data-type="width"]').value);
-    if(qty>0&&w>0) rows.push({qty,width:w});
+    const cEl=row.querySelector('[data-type="carton"]');
+    const carton=cEl?Math.floor(parseNum(cEl.value)):0;
+    if(qty>0&&w>0){const o={qty,width:w};if(carton>0)o.carton=carton;rows.push(o);}
   });
   return rows;
 }
-function addOrderRow(qty='',width=''){
+function addOrderRow(qty='',width='',carton='',rattrapage=false){
   const div=document.createElement('div');
   div.className='order-row';
+  if(rattrapage){div.dataset.rattrapage='1';div.style.borderLeft='3px solid var(--orange)';div.style.paddingLeft='6px';}
   div.innerHTML=`<span class="order-lbl">Qté</span>
     <input type="text" data-type="qty" placeholder="400" value="${qty}" inputmode="decimal" oninput="recalcPlan()" style="max-width:90px">
     <span class="order-lbl">× Larg.</span>
     <input type="text" data-type="width" placeholder="80" value="${width}" inputmode="decimal" oninput="recalcPlan()" style="max-width:90px">
     <span class="order-lbl">mm</span>
+    <span class="order-lbl carton-cell" style="display:none">· Carton</span>
+    <input type="text" data-type="carton" placeholder="3" value="${carton}" inputmode="numeric" oninput="recalcPlan()" class="carton-cell" style="max-width:70px;display:none">
     <button class="btn btn-red btn-sm" style="padding:7px 10px" onclick="this.parentElement.remove();recalcPlan()">✕</button>`;
   document.getElementById('orderRows').appendChild(div);
+  updateCartonVisibility();
+}
+// Retire toutes les lignes de rattrapage (plan + fiche) pour permettre un recalcul propre sans doublon
+function clearRattrapage(){
+  document.querySelectorAll('.order-row[data-rattrapage="1"]').forEach(r=>r.remove());
+  ficheLines.filter(l=>l.rattrapage).forEach(l=>{document.getElementById(l.id)?.remove();});
+  ficheLines=ficheLines.filter(l=>!l.rattrapage);
+}
+// Affiche/masque la case "Carton" par ligne selon le type de conditionnement (Carton)
+function updateCartonVisibility(){
+  const show=(document.getElementById('planType')?.value||'')==='Carton';
+  document.querySelectorAll('.order-row .carton-cell').forEach(el=>{el.style.display=show?'':'none';});
 }
 function initDefaultRows(){DEFAULT_ROWS.forEach(r=>addOrderRow(r.qty,r.width));}
 
@@ -2003,7 +2022,6 @@ function recalcPlan(){
     planOversize=[];
     document.getElementById('statsBar').innerHTML='';
     document.getElementById('planCards').innerHTML='<div class="text-muted" style="padding:8px 0">Aucune donnée à optimiser.</div>';
-    document.getElementById('etiquetteSolde').classList.add('hidden');
     return;
   }
   const bobines=pack(expandDemand(rows),useful,blade);
@@ -2052,25 +2070,7 @@ function recalcPlan(){
     </div>`;
   });
   document.getElementById('planCards').innerHTML=html;
-
-  const lastG=planGroups[planGroups.length-1];
-  if(lastG){
-    const lst=calcStats(lastG.pattern,blade);
-    const solde=useful-lst.total;
-    const mother=parseNum(document.getElementById('motherWidth').value);
-    const mn=getMachineLabel(currentMachine);
-    // Numéro de la bobine mère qui porte le solde = dernière bobine du plan
-    const totalBob=planGroups.reduce((s,g)=>s+g.count,0);
-    const numBob=totalBob; // la bobine solde est la dernière
-    const etiqData={mn,decoupe:makeLabel(lastG.pattern),solde:fmt(solde),mother:fmt(mother),date:today(),numBob};
-    document.getElementById('etiquetteSolde').classList.remove('hidden');
-    document.getElementById('etiquetteSolde').innerHTML=`<div class="etiquette-box">
-      <strong>Étiquette solde</strong><br>
-      Machine : ${mn} · Bobine n° <strong>${numBob}/${totalBob}</strong> · Découpe : ${makeLabel(lastG.pattern)}<br>
-      Solde : <strong>${fmt(solde)} mm</strong> · Bobine mère : ${fmt(mother)} mm · Date : ${today()}<br>
-      <button class="btn btn-orange btn-sm" style="margin-top:10px" onclick='printEtiquette(${JSON.stringify(etiqData)})'>🖨️ Imprimer l'étiquette</button>
-    </div>`;
-  }
+  // L'étiquette solde est désormais gérée en bas de la Fiche découpe (plus dans le Plan).
 }
 
 function resetPlan(){
@@ -2148,15 +2148,58 @@ function printEtiquette(d){
   <div class="etiq">
     <h2>ÉTIQUETTE SOLDE — STEP</h2>
     <div class="solde">${d.solde} mm</div>
+    ${d.numBob?`<div class="row"><b>Bobine mère n° :</b> ${d.numBob}</div>`:''}
+    ${d.ref?`<div class="row"><b>Référence :</b> ${d.ref}</div>`:''}
     <div class="row"><b>Machine :</b> ${d.mn}</div>
-    ${d.numBob?`<div class="row"><b>Bobine n° :</b> ${d.numBob}</div>`:''}
-    <div class="row"><b>Découpe :</b> ${d.decoupe}</div>
+    ${d.decoupe?`<div class="row"><b>Découpe :</b> ${d.decoupe}</div>`:''}
     <div class="row"><b>Bobine mère :</b> ${d.mother} mm</div>
     <div class="row"><b>Date :</b> ${d.date}</div>
   </div>
   </body></html>`;
   openPrintWindow(html);
 }
+
+// ===== ÉTIQUETTE SOLDE EN BAS DE FICHE =====
+// Calcule le solde (laize restante) depuis le plan courant : dernière bobine du plan.
+function getEtiquetteSoldeData(){
+  const rows=getOrderRows(),useful=getUseful(),blade=getBlade();
+  if(!rows.length||useful<=0) return null;
+  const groups=groupBobines(pack(expandDemand(rows),useful,blade),blade);
+  const lastG=groups[groups.length-1];
+  if(!lastG) return null;
+  const solde=useful-calcStats(lastG.pattern,blade).total;
+  const mother=parseNum(document.getElementById('motherWidth').value);
+  const mn=getMachineLabel(ficheMachine||currentMachine);
+  const ref=document.getElementById('fRef')?.value||document.getElementById('planRef')?.value||'';
+  return {mn,ref,decoupe:makeLabel(lastG.pattern),solde:fmt(solde),mother:fmt(mother),date:today()};
+}
+function refreshEtiquetteSolde(){
+  const info=document.getElementById('etiquetteSoldeInfo');
+  if(!info) return;
+  const d=getEtiquetteSoldeData();
+  if(!d){
+    info.innerHTML='<span style="color:var(--muted)">Aucun plan chargé — l\'étiquette se calcule depuis les bobines du plan.</span>';
+  }else{
+    info.innerHTML=`Laize restante : <strong style="color:var(--orange)">${d.solde} mm</strong> · Réf : <strong>${esc(d.ref||'—')}</strong><br>`+
+      `Machine : ${d.mn} · Bobine mère : ${d.mother} mm · Date : ${d.date}`;
+  }
+  updateEtiquetteBtn();
+}
+function updateEtiquetteBtn(){
+  const btn=document.getElementById('etiqPrintBtn'),hint=document.getElementById('etiqHint');
+  const num=(document.getElementById('etiqNumMere')?.value||'').trim();
+  const ready=!!num && !!getEtiquetteSoldeData();
+  if(btn){btn.style.opacity=ready?'1':'.4';btn.style.cursor=ready?'pointer':'not-allowed';}
+  if(hint) hint.style.display=ready?'none':'block';
+}
+function printEtiquetteSolde(){
+  const num=(document.getElementById('etiqNumMere')?.value||'').trim();
+  if(!num){alert('⚠ Saisis le n° de la bobine mère avant d\'imprimer l\'étiquette.');return;}
+  const d=getEtiquetteSoldeData();
+  if(!d){alert('⚠ Aucun plan chargé : impossible de calculer le solde.');return;}
+  printEtiquette({...d,numBob:num});
+}
+
 function printOrder(){
   const rows=getOrderRows(),mn=getMachineLabel(currentMachine);
   const client=document.getElementById('planClient').value||'—';
@@ -2312,7 +2355,7 @@ function doLoad(){
     document.getElementById('packagingAlert').classList.add('hidden');
   }
   document.querySelectorAll('.order-row').forEach(r=>r.remove());
-  s.rows.forEach(r=>addOrderRow(r.qty,r.width));
+  s.rows.forEach(r=>addOrderRow(r.qty,r.width,r.carton||''));
   recalcPlan();closeLoadModal();showPage(0);
 }
 async function deleteSave(id){
@@ -2473,8 +2516,8 @@ async function confirmCommande(){
         ri++;
       }
     });
-    // Dans le PLAN : ajouter les manquants comme lignes de commande supplémentaires
-    Object.entries(ec.deficit).forEach(([w,q])=>{ addOrderRow(q,Number(w)); });
+    // Dans le PLAN : ajouter les manquants comme lignes de commande supplémentaires (taguées rattrapage)
+    Object.entries(ec.deficit).forEach(([w,q])=>{ addOrderRow(q,Number(w),'',true); });
     recalcPlan();
     refreshOp2BobineList();
     alert('✓ Bobine(s) de rattrapage ajoutée(s) dans la fiche et le plan.\n\nL\'opérateur peut maintenant couper le rattrapage, puis re-confirmer.');
@@ -2484,6 +2527,73 @@ async function confirmCommande(){
 
   // === Pas de déficit (ou surplus seul) → on enregistre la fiche ===
   await saveCommandeFiche(rows,useful,blade,{modifié,ecartLines});
+}
+
+// === BOUTON "♻ Recalculer les écarts" (par bobine, agit sur toute la commande) ===
+// Recalcule l'écart commande↔découpe réelle SANS enregistrer ni reset.
+// Ré-exécutable : on retire d'abord l'ancien rattrapage (plan + fiche) pour ne pas accumuler de doublons.
+function recalcEcartsFromFiche(){
+  if(!chronoRunning){
+    alert('⏱ Le chronomètre doit être en marche pour recalculer les écarts.');
+    return;
+  }
+  // 1) Nettoyer l'ancien rattrapage : on repart de la commande d'origine.
+  clearRattrapage();
+  renumberFicheLines();
+
+  const rows=getOrderRows(); // après nettoyage = commande d'origine
+  if(!rows.length){alert('Aucune commande à recalculer.');return;}
+  const useful=getUseful(),blade=getBlade();
+
+  // 2) Garde-fou : pas de laize > utile
+  const over=rows.filter(r=>r.width>useful);
+  if(over.length){
+    alert(`⛔ Recalcul bloqué.\n\n${over.length} laize(s) dépassent la largeur utile (${fmt(useful)} mm) : ${over.map(r=>fmt(r.width)+' mm').join(', ')}.`);
+    return;
+  }
+
+  // 3) Calcul des écarts (déficit / surplus par largeur)
+  const ec=computeEcarts(rows);
+  const hasDeficit=Object.keys(ec.deficit).length>0;
+  const hasSurplus=Object.keys(ec.surplus).length>0;
+
+  if(!hasDeficit && !hasSurplus){
+    updateAllCumuls();updateCoupeeStatus();
+    alert('✓ Aucun écart : la découpe correspond à la commande.');
+    return;
+  }
+
+  let ecartLines=[];
+  Object.entries(ec.deficit).forEach(([w,q])=>ecartLines.push(`−${q}×${w}mm (manquant)`));
+  Object.entries(ec.surplus).forEach(([w,q])=>ecartLines.push(`+${q}×${w}mm (en trop)`));
+
+  // 4) SURPLUS : déduit des bobines NON coupées du plan
+  if(hasSurplus) applySurplusDeduction(ec.surplus);
+
+  // 5) DÉFICIT : bobine(s) de rattrapage optimisée(s), ajoutées fiche + plan (taguées)
+  if(hasDeficit){
+    const ratGroups=buildRattrapageGroups(ec.deficit,useful,blade);
+    let ri=1;
+    ratGroups.forEach(g=>{
+      for(let ci=0;ci<g.count;ci++){
+        addFicheLine({label:'RATTRAPAGE-'+String(ri).padStart(2,'0'),conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + '),rattrapage:true});
+        ri++;
+      }
+    });
+    Object.entries(ec.deficit).forEach(([w,q])=>{ addOrderRow(q,Number(w),'',true); });
+  }
+
+  recalcPlan();
+  updateAllCumuls();
+  updateCoupeeStatus();
+  refreshOp2BobineList();
+  renumberFicheLines();
+  refreshEtiquetteSolde();
+
+  let msg='♻ Écarts recalculés :\n\n'+ecartLines.join('\n')+'\n\n';
+  if(hasDeficit) msg+='→ Bobine(s) de RATTRAPAGE ajoutée(s) (fiche + plan). Coupe-la(les) puis confirme.\n';
+  if(hasSurplus) msg+='→ Surplus déduit des bobines non encore coupées.\n';
+  alert(msg);
 }
 
 // Applique la déduction d'un surplus sur les bobines NON coupées du plan (P1)
@@ -2543,8 +2653,6 @@ async function saveCommandeFiche(rows,useful,blade,opts){
   const numCmd=g('fNumCmd').value||g('planNumCmd').value||'—';
   const dateLivRaw=g('fDateLiv').value||g('planDateLiv').value;
   const dateLiv=dateLivRaw?new Date(dateLivRaw).toLocaleDateString('fr-FR'):'—';
-  const bobParCarton=g('fBobParCarton')?(g('fBobParCarton').value||''):'';
-  const numLot=g('fNumLot')?(g('fNumLot').value||''):'';
   const totalMat=bobines.length*useful;
   const totalUsed=bobines.reduce((s,p)=>s+calcStats(p,blade).total,0);
   const pct=totalMat>0?((totalMat-totalUsed)/totalMat*100):0;
@@ -2558,7 +2666,7 @@ async function saveCommandeFiche(rows,useful,blade,opts){
 
   const ficheEntry={
     name:planName,date:isoNow(),client,ref,ini,ini2,op2Bob,machine,lame,numJour,longueur,mother,rows,
-    numCmd,dateLiv,deleted:false,bobParCarton,numLot,
+    numCmd,dateLiv,deleted:false,cartonByWidth:{...cartonByWidth},
     palette,typeCond,etiquetage,cerclage,notesEmballage:notesEmb,
     groups:groups.map(gp=>({label:makeLabel(gp.pattern),count:gp.count,total:fmt(calcStats(gp.pattern,blade).total),waste:fmt(useful-calcStats(gp.pattern,blade).total),isLast:false})),
     useful:fmt(useful),blade:fmt(blade),pct:pct.toFixed(1),tempsStr,totalBobines:bobines.length,
@@ -2652,14 +2760,13 @@ function resetAll(){
   ficheLines=[];
   Object.keys(ficholinePhotos).forEach(function(k){delete ficholinePhotos[k];});
   commandTotals={};
+  cartonByWidth={};
   document.getElementById('fClient').value='';
   document.getElementById('fRef').value='';
   const fnc=document.getElementById('fNumCmd');if(fnc)fnc.value='';
   const fdl=document.getElementById('fDateLiv');if(fdl)fdl.value='';
   document.getElementById('fNumLame').value='';
   document.getElementById('fNumJour').value=getDayOfYear();
-  const fLot=document.getElementById('fNumLot');if(fLot)fLot.value='';
-  const fBpc=document.getElementById('fBobParCarton');if(fBpc)fBpc.value='';
   document.getElementById('fLongueur').value='';
   ['fPalette','fType','fEtiquetage','fCerclage'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
   const fNotes=document.getElementById('fNotesEmballage');if(fNotes)fNotes.value='';
@@ -2669,6 +2776,8 @@ function resetAll(){
   selectedIni2='';
   document.querySelectorAll('#initBtns2 .ini-btn').forEach(function(b){b.classList.remove('sel2');});
   document.getElementById('fOp2Bobine').innerHTML='<option value="">— Choisir une bobine —</option>';
+  const etiqN=document.getElementById('etiqNumMere');if(etiqN)etiqN.value='';
+  refreshEtiquetteSolde();
 
   // Re-sélectionner l'opérateur connecté
   if(currentUser&&currentUser.ini){
@@ -3319,6 +3428,16 @@ function toggleValidatedFiches(){
   renderFiches();
 }
 
+// Construit la chaîne "3×80mm/C · 5×50mm/C" depuis cartonByWidth d'une fiche (rétrocompat : ancien champ bobParCarton)
+function cartonRatioStr(f){
+  if(f&&f.cartonByWidth&&Object.keys(f.cartonByWidth).length){
+    return Object.entries(f.cartonByWidth).sort((a,b)=>Number(b[0])-Number(a[0]))
+      .map(([w,n])=>`${n}×${w}mm/carton`).join(' · ');
+  }
+  if(f&&f.bobParCarton) return `${f.bobParCarton}C`; // anciennes fiches
+  return '';
+}
+
 function renderFiches(){
   const all=fichesCache.filter(f=>!f.deleted);
   const nbValid=all.filter(f=>f.valide===true).length;
@@ -3376,7 +3495,7 @@ function renderFiches(){
         <div class="fc-cell"><span class="fc-lbl">Perte</span><span class="fc-val" style="color:${parseFloat(f.pct)<3?'#4ade80':parseFloat(f.pct)<8?'#f59e0b':'#f87171'}">${f.pct}%</span></div>
       </div>
       <div class="fc-cmdline">${cmd||'—'}</div>
-      ${pkg?`<div class="fc-pkg">📦 ${esc(pkg)}${f.bobParCarton?` · ${esc(f.bobParCarton)}C`:''}${f.numLot?` · Lot ${esc(f.numLot)}`:''}</div>`:''}
+      ${pkg?`<div class="fc-pkg">📦 ${esc(pkg)}${cartonRatioStr(f)?` · ${esc(cartonRatioStr(f))}`:''}</div>`:''}
       <div class="fc-foot">${ds} · ⏱ ${esc(f.tempsStr||'—')}</div>
       <div class="fc-actions">
         <button class="fc-btn fc-btn-ghost" onclick="showFicheDetail('${f._id}',true)">📄 PDF</button>
@@ -3685,8 +3804,8 @@ function showFicheDetail(id,autoPrint){
     </div>`:'';
 
   const op2Line=f.ini2?`<span>Opérateur 2</span><span>${f.ini2}${f.op2Bob?` — repris dès la bobine ${f.op2Bob}`:''}</span>`:'';
-  const pkgLine=`<span>Packaging</span><span>Palette ${f.palette||'—'} · Type ${f.typeCond||f.carton||'—'}${f.bobParCarton?` · ${esc(f.bobParCarton)} bobines/carton (${esc(f.bobParCarton)}C)`:''} · Étiquetage ${f.etiquetage||f.etiquette||'—'} · Cerclage ${f.cerclage||'—'}</span>`;
-  const lotLine=f.numLot?`<span>N° de lot</span><span>${esc(f.numLot)}</span>`:'';
+  const cartonStr=cartonRatioStr(f);
+  const pkgLine=`<span>Packaging</span><span>Palette ${f.palette||'—'} · Type ${f.typeCond||f.carton||'—'}${cartonStr?` · ${esc(cartonStr)}`:''} · Étiquetage ${f.etiquetage||f.etiquette||'—'} · Cerclage ${f.cerclage||'—'}</span>`;
   const notesLine=(f.notesEmballage&&f.notesEmballage.trim())?`<span>Notes condit.</span><span style="white-space:pre-line">${esc(f.notesEmballage)}</span>`:'';
 
   const html=`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
@@ -3731,7 +3850,6 @@ function showFicheDetail(id,autoPrint){
       <span>Longueur réf.</span><span>${f.longueur} m</span>
       <span>Lame N°</span><span>${f.lame}</span>
       <span>N° Jour</span><span>${f.numJour}</span>
-      ${lotLine}
       ${pkgLine}
       ${notesLine}
       <span>Temps</span><span style="color:${f.tempsStr==='non enregistré'?'#888':'#4ade80'}">${f.tempsStr}</span>
@@ -4072,6 +4190,7 @@ function addFicheLine(data){
       <div class="field" style="grid-column:1/-1"><label>Nb bob. × Largeur</label>
         <input type="text" id="flConf_${id}" value="${data.conf||''}" placeholder="5×80 + 3×50"
           inputmode="text" oninput="onFicheConfChange('${id}')">
+        <button class="btn btn-orange btn-sm" style="margin-top:8px" onclick="recalcEcartsFromFiche()" title="Recalcule les écarts (rattrapage / surplus) sur toute la commande">♻ Recalculer les écarts</button>
       </div>
       <div class="field" style="grid-column:1/-1">
         <label>Test 2ème bobineaux</label>
@@ -4254,7 +4373,8 @@ function updateAllCumuls(){
       const total=commandTotals[p.width]||0;
       const cur=running[p.width]||0;
       const done=total>0&&cur>=total;
-      return `<div class="cumul-row ${done?'done':'run'}">${p.width} mm : ${cur}${total>0?' / '+total:''}${done?' ✓':''}</div>`;
+      const carton=cartonByWidth[p.width]||0;
+      return `<div class="cumul-row ${done?'done':'run'}">${p.width} mm : ${cur}${total>0?' / '+total:''}${carton>0?' · '+carton+'/carton':''}${done?' ✓':''}</div>`;
     }).join('');
   });
 }
@@ -4275,7 +4395,6 @@ function serializeFicheState(){
       etiquetage:g('planEtiquetage')?.value||'',cerclage:g('planCerclage')?.value||'',notes:g('planNotesEmballage')?.value||'',rows:getOrderRows()},
     fiche:{machine:ficheMachine,ini:g('fInitiales')?.value||'',ini2:g('fInitiales2')?.value||'',op2Active:g('fOp2Active')?.checked||false,op2Bob:g('fOp2Bobine')?.value||'',
       lame:g('fNumLame')?.value||'',numJour:g('fNumJour')?.value||'',longueur:g('fLongueur')?.value||'',client:g('fClient')?.value||'',ref:g('fRef')?.value||'',
-      numLot:g('fNumLot')?.value||'',bobParCarton:g('fBobParCarton')?.value||'',
       numCmd:g('fNumCmd')?.value||'',dateLiv:g('fDateLiv')?.value||'',type:g('fType')?.value||'',palette:g('fPalette')?.value||'',etiquetage:g('fEtiquetage')?.value||'',cerclage:g('fCerclage')?.value||'',notes:g('fNotesEmballage')?.value||''},
     lines:getFicheLinesData()
   };
@@ -4346,15 +4465,16 @@ function restoreFicheState(st){
   if(g('planCerclage'))g('planCerclage').value=st.plan.cerclage;
   if(g('planNotesEmballage'))g('planNotesEmballage').value=st.plan.notes;
   document.querySelectorAll('.order-row').forEach(r=>r.remove());
-  (st.plan.rows||[]).forEach(r=>addOrderRow(r.qty,r.width));
+  (st.plan.rows||[]).forEach(r=>addOrderRow(r.qty,r.width,r.carton||''));
   recalcPlan();
+  commandTotals={};cartonByWidth={};
+  (st.plan.rows||[]).forEach(r=>{commandTotals[r.width]=(commandTotals[r.width]||0)+r.qty; if(r.carton>0) cartonByWidth[r.width]=r.carton;});
   selectFicheMachine(st.fiche.machine||st.plan.machine||'feba');
   const setV=(id,v)=>{const el=g(id);if(el)el.value=v;};
   setV('fInitiales',st.fiche.ini);setV('fInitiales2',st.fiche.ini2);setV('fOp2Bobine',st.fiche.op2Bob);
   setV('fNumLame',st.fiche.lame);setV('fNumJour',st.fiche.numJour);setV('fLongueur',st.fiche.longueur);
   setV('fClient',st.fiche.client);setV('fRef',st.fiche.ref);setV('fNumCmd',st.fiche.numCmd);setV('fDateLiv',st.fiche.dateLiv);
   setV('fType',st.fiche.type);setV('fPalette',st.fiche.palette);setV('fEtiquetage',st.fiche.etiquetage);setV('fCerclage',st.fiche.cerclage);setV('fNotesEmballage',st.fiche.notes);
-  setV('fNumLot',st.fiche.numLot||'');setV('fBobParCarton',st.fiche.bobParCarton||'');
   if(st.fiche.ini){selectedIni=st.fiche.ini;document.querySelectorAll('#initBtns .ini-btn').forEach(b=>b.classList.toggle('sel',b.textContent===st.fiche.ini));}
   if(g('fOp2Active')){g('fOp2Active').checked=!!st.fiche.op2Active;toggleOp2();}
   document.getElementById('ficheLines').innerHTML='';ficheLines=[];
