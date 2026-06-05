@@ -573,6 +573,7 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
       <input type="text" id="etiqNumMere" placeholder="ex : 11" inputmode="text" oninput="updateEtiquetteBtn()">
     </div>
     <button class="btn btn-orange" id="etiqPrintBtn" style="width:100%;justify-content:center;opacity:.4;cursor:not-allowed" onclick="printEtiquetteSolde()">🖨️ Imprimer l'étiquette solde</button>
+    <button class="btn btn-ghost" id="etiqQueueBtn" style="width:100%;justify-content:center;margin-top:8px" onclick="queueEtiquette()">🏷 Ajouter à la file d'impression</button>
     <div style="text-align:center;margin-top:6px;font-size:11px;color:var(--muted)" id="etiqHint">Saisis le n° de la bobine mère pour activer l'impression</div>
   </div>
 
@@ -594,6 +595,7 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
     <button class="tab-btn" id="tabTemps" onclick="switchTab('temps')">⏱ Temps</button>
     <button class="tab-btn" id="tabAnalyse" onclick="switchTab('analyse')">📈 Analyse</button>
     <button class="tab-btn" id="tabBrouillons" onclick="switchTab('brouillons')">📝 Brouillons</button>
+    <button class="tab-btn" id="tabImpressions" onclick="switchTab('impressions')" style="display:none">🏷 Étiquettes</button>
     <button class="tab-btn" id="tabCorbeille" onclick="switchTab('corbeille')" style="display:none">🗑 Corbeille</button>
   </div>
 
@@ -698,6 +700,14 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
     <div style="padding:10px 0 14px;font-size:13px;color:var(--muted)">Éléments archivés. Fiches <b>validées</b> conservées 2 ans (qualité/ISO). Autres éléments supprimés après 45 jours. Avant suppression, tout est sauvegardé dans l'archive froide (🧊 dans Plans).</div>
     <div id="corbeilleList"></div>
     <div id="corbeilleEmpty" class="text-muted" style="padding:8px 0">Corbeille vide.</div>
+  </div>
+
+  <!-- ONGLET ÉTIQUETTES (file d'impression) -->
+  <div id="tabContentImpressions" class="hidden">
+    <div style="padding:6px 0 12px;font-size:13px;color:var(--muted)">File d'impression des étiquettes solde. Les opérateurs envoient l'étiquette ici depuis la Fiche ; tu saisis le <b>n° de lot</b> à la main, puis tu imprimes au format <b>10×7</b>.</div>
+    <div style="margin-bottom:12px"><button class="btn btn-ghost btn-sm" onclick="loadImpressions()">🔄 Rafraîchir</button></div>
+    <div id="impressionsList"></div>
+    <div id="impressionsEmpty" class="text-muted hidden" style="padding:8px 0">Aucune étiquette en attente.</div>
   </div>
 </div>
 
@@ -1087,10 +1097,11 @@ function applyRole(){
   document.getElementById('tabAnalyse').style.display=canViewAnalyse()?'':'none';
   document.getElementById('tabCorbeille').style.display=canManageData()?'':'none';
   document.getElementById('tabNc').style.display=canManageData()?'':'none';
+  document.getElementById('tabImpressions').style.display=canManageData()?'':'none';
   // Si l'onglet actif n'est plus autorisé, rebascule sur Plans
   const active=document.querySelector('.tab-btn.active');
   if(active){
-    if((active.id==='tabAnalyse'&&!canViewAnalyse())||((active.id==='tabCorbeille'||active.id==='tabNc')&&!canManageData())) switchTab('saves');
+    if((active.id==='tabAnalyse'&&!canViewAnalyse())||((active.id==='tabCorbeille'||active.id==='tabNc'||active.id==='tabImpressions')&&!canManageData())) switchTab('saves');
   }
   // Pré-sélectionner l'opérateur connecté dans la fiche
   if(currentUser&&currentUser.ini){
@@ -1840,8 +1851,8 @@ function importPlanToFiche(opts){
 
 function switchTab(tab){
   if(tab==='analyse'&&!canViewAnalyse()) tab='saves';
-  if((tab==='corbeille'||tab==='nc')&&!canManageData()) tab='saves';
-  ['saves','temps','fiches','brouillons','nc','analyse','corbeille'].forEach(t=>{
+  if((tab==='corbeille'||tab==='nc'||tab==='impressions')&&!canManageData()) tab='saves';
+  ['saves','temps','fiches','brouillons','nc','analyse','corbeille','impressions'].forEach(t=>{
     document.getElementById('tab'+t.charAt(0).toUpperCase()+t.slice(1))?.classList.toggle('active',tab===t);
     document.getElementById('tabContent'+t.charAt(0).toUpperCase()+t.slice(1))?.classList.toggle('hidden',tab!==t);
   });
@@ -1851,6 +1862,7 @@ function switchTab(tab){
   else if(tab==='analyse') renderAnalyse();
   else if(tab==='corbeille'){ loadCorbeille(); }
   else if(tab==='nc') renderNc();
+  else if(tab==='impressions') loadImpressions();
   else renderFiches();
 }
 
@@ -2255,6 +2267,131 @@ function printEtiquetteSolde(){
   const d=getEtiquetteSoldeData();
   if(!d){alert('⚠ Aucun plan chargé : impossible de calculer le solde.');return;}
   printEtiquette({...d,numBob:num});
+}
+
+// ============================================================
+// FILE D'IMPRESSION DES ÉTIQUETTES (collection Firestore `impressions`)
+// L'opérateur envoie une étiquette solde dans la file ; le pilotage (DC)
+// saisit le n° de lot à la main puis imprime au format 10×7.
+// ============================================================
+var impressionsCache=[];
+async function queueEtiquette(){
+  const d=getEtiquetteSoldeData();
+  if(!d){alert('⚠ Aucun plan chargé : rien à mettre en file d\'impression.');return;}
+  const g=id=>document.getElementById(id);
+  const entry={
+    client:(g('fClient')?.value||g('planClient')?.value||'').trim(),
+    ref:d.ref||'',
+    numCmd:(g('fNumCmd')?.value||g('planNumCmd')?.value||'').trim(),
+    machine:d.mn||'',
+    solde:d.solde||'',
+    numBob:(g('etiqNumMere')?.value||'').trim(),
+    numLot:'',
+    status:'pending',
+    createdAt:isoNow(),
+    createdBy:currentUser?(currentUser.ini||currentUser.nom||''):'',
+    printedAt:'',printedBy:''
+  };
+  try{
+    const r=await db.collection('impressions').add(entry);
+    logAudit('add','impressions',r.id,`Étiquette en file — ${entry.client||'?'} / ${entry.ref||'?'} (solde ${entry.solde} mm)`);
+    alert('🏷 Étiquette ajoutée à la file (Données → Étiquettes). Le n° de lot sera saisi avant impression.');
+  }catch(e){alert('Erreur file d\'impression : '+e.message);}
+}
+async function loadImpressions(){
+  const list=document.getElementById('impressionsList');
+  if(list) list.innerHTML='<div style="color:var(--muted);padding:8px 0">Chargement…</div>';
+  try{
+    const snap=await db.collection('impressions').where('status','==','pending').limit(300).get();
+    impressionsCache=snap.docs.map(d=>Object.assign({_id:d.id},d.data()));
+    impressionsCache.sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')));
+    renderImpressions();
+  }catch(e){
+    if(list) list.innerHTML='<div style="color:var(--red);padding:8px 0">Erreur chargement file : '+esc(e.message)+'</div>';
+  }
+}
+function renderImpressions(){
+  const list=document.getElementById('impressionsList');
+  const empty=document.getElementById('impressionsEmpty');
+  if(!list) return;
+  if(!impressionsCache.length){
+    list.innerHTML='';
+    if(empty) empty.classList.remove('hidden');
+    return;
+  }
+  if(empty) empty.classList.add('hidden');
+  const inp='padding:8px;background:var(--card);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:13px;width:100%';
+  list.innerHTML=impressionsCache.map(it=>{
+    const dt=it.createdAt?new Date(it.createdAt).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+    return `<div class="save-card" style="flex-direction:column;align-items:stretch;gap:10px;border-left:3px solid var(--orange)">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <div style="font-weight:700">${esc(it.client||'—')} · <span style="color:var(--blue)">${esc(it.ref||'—')}</span></div>
+        <div style="font-size:12px;color:var(--muted)">${esc(it.createdBy||'')}${dt?' · '+dt:''}</div>
+      </div>
+      <div style="font-size:13px;color:var(--muted)">Solde <strong style="color:var(--orange)">${esc(String(it.solde||'—'))} mm</strong> · Machine ${esc(it.machine||'—')}${it.numCmd?' · Cmd '+esc(it.numCmd):''}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">N° lot (à saisir)</label><input id="imp_lot_${it._id}" value="${esc(it.numLot||'')}" placeholder="ex : 2406-12" style="${inp}"></div>
+        <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">N° bobine mère</label><input id="imp_bob_${it._id}" value="${esc(it.numBob||'')}" placeholder="ex : 11" style="${inp}"></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-orange btn-sm" style="flex:1;justify-content:center" onclick="printImpressionLabel('${it._id}')">🖨 Imprimer 10×7</button>
+        <button class="btn btn-green btn-sm" style="flex:1;justify-content:center" onclick="markImpressionDone('${it._id}')">✓ Imprimée</button>
+        <button class="btn btn-ghost btn-sm" onclick="deleteImpression('${it._id}')">🗑</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+function printImpressionLabel(id){
+  const it=impressionsCache.find(x=>x._id===id);
+  if(!it) return;
+  const lot=(document.getElementById('imp_lot_'+id)?.value||it.numLot||'').trim();
+  const bob=(document.getElementById('imp_bob_'+id)?.value||it.numBob||'').trim();
+  const date=it.createdAt?new Date(it.createdAt).toLocaleDateString('fr-FR'):today();
+  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Étiquette STEP 10×7</title>
+  <style>
+    @page{size:100mm 70mm;margin:0}
+    *{margin:0;padding:0;box-sizing:border-box}
+    html,body{width:100mm;height:70mm}
+    body{font-family:Arial,sans-serif;padding:5mm;display:flex;flex-direction:column;background:#fff;color:#000}
+    .hd{display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid #000;padding-bottom:3px;margin-bottom:6px}
+    .hd .t{font-size:13px;font-weight:900;letter-spacing:.04em}
+    .hd .d{font-size:11px;color:#333}
+    .cl{font-size:17px;font-weight:800;line-height:1.1}
+    .rf{font-size:13px;color:#333;margin:1px 0 8px}
+    .solde{font-size:24px;font-weight:900;color:#b45309;margin-bottom:6px}
+    .grid{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px;margin-top:auto}
+    .grid b{font-weight:700}
+  </style></head><body>
+    <div class="hd"><span class="t">STEP — ÉTIQUETTE SOLDE</span><span class="d">${esc(date)}</span></div>
+    <div class="cl">${esc(it.client||'—')}</div>
+    <div class="rf">${esc(it.ref||'')}</div>
+    <div class="solde">Solde : ${esc(String(it.solde||'—'))} mm</div>
+    <div class="grid">
+      <b>N° lot</b><span>${esc(lot||'—')}</span>
+      <b>N° bobine mère</b><span>${esc(bob||'—')}</span>
+      <b>Machine</b><span>${esc(it.machine||'—')}</span>
+    </div>
+  </body></html>`;
+  openPrintWindow(html);
+}
+async function markImpressionDone(id){
+  const lot=(document.getElementById('imp_lot_'+id)?.value||'').trim();
+  const bob=(document.getElementById('imp_bob_'+id)?.value||'').trim();
+  try{
+    await db.collection('impressions').doc(id).update({status:'printed',numLot:lot,numBob:bob,printedAt:isoNow(),printedBy:currentUser?(currentUser.ini||currentUser.nom||''):''});
+    logAudit('edit','impressions',id,`Étiquette imprimée (lot ${lot||'—'}, bob ${bob||'—'})`);
+    impressionsCache=impressionsCache.filter(x=>x._id!==id);
+    renderImpressions();
+  }catch(e){alert('Erreur : '+e.message);}
+}
+async function deleteImpression(id){
+  if(!confirm('Retirer cette étiquette de la file ?')) return;
+  try{
+    await db.collection('impressions').doc(id).delete();
+    logAudit('delete','impressions',id,'Étiquette retirée de la file');
+    impressionsCache=impressionsCache.filter(x=>x._id!==id);
+    renderImpressions();
+  }catch(e){alert('Erreur : '+e.message);}
 }
 
 function printOrder(){
@@ -3194,43 +3331,18 @@ function chuteDim(d){
 function buildFicheAnalytics(){
   const fiches=fichesCache.filter(f=>!f.deleted);
   if(!fiches.length) return '';
-  let ncLarg=0,ncQty=0,ncCasse=0,ncAng=0,totBob=0,ncBob=0;
-  const opStat={},machStat={},clientPct={};
+  const opStat={},machStat={};
   fiches.forEach(f=>{
     const det=f.ficheDetail||[];
     let fNc=0;
-    det.forEach(d=>{
-      totBob++;let isNc=false;
-      if(d.ncLarg){ncLarg++;isNc=true;}
-      if(d.ncQty){ncQty++;isNc=true;}
-      if(d.ncCasse){ncCasse++;isNc=true;}
-      if(d.ncAng){ncAng++;isNc=true;}
-      if(isNc){ncBob++;fNc++;}
-    });
+    det.forEach(d=>{ if(d.ncLarg||d.ncQty||d.ncCasse||d.ncAng) fNc++; });
     const op=f.ini||'?';if(!opStat[op])opStat[op]={nc:0,tot:0};opStat[op].nc+=fNc;opStat[op].tot+=det.length;
     const m=f.machine||'?';if(!machStat[m])machStat[m]={nc:0,tot:0};machStat[m].nc+=fNc;machStat[m].tot+=det.length;
-    const pct=parseFloat(f.pct);if(!isNaN(pct)){const c=f.client||'?';if(!clientPct[c])clientPct[c]=[];clientPct[c].push(pct);}
   });
-  const ncTotal=ncLarg+ncQty+ncCasse+ncAng;
-  const ncSlices=[
-    {label:'Largeur',value:ncLarg,color:'#f87171'},
-    {label:'Quantité',value:ncQty,color:'#f59e0b'},
-    {label:'Casse',value:ncCasse,color:'#a78bfa'},
-    {label:'Angle',value:ncAng,color:'#60a5fa'}
-  ].filter(s=>s.value>0);
-  const ncLegend=ncSlices.map(s=>`<div style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:4px">
-    <span style="width:12px;height:12px;border-radius:2px;background:${s.color};flex-shrink:0"></span>
-    <span style="color:#ccc">${s.label}</span>
-    <span style="color:#fff;font-weight:700;margin-left:auto">${s.value}</span>
-    <span style="color:#777;width:42px;text-align:right">${Math.round(s.value/ncTotal*100)}%</span>
-  </div>`).join('');
   const opColors={'TB':'#60a5fa','JF':'#4ade80','MT':'#f59e0b','DC':'#a78bfa','ER':'#f87171','CH':'#34d399','?':'#888'};
   const opItems=Object.entries(opStat).filter(([,d])=>d.tot>0).map(([op,d])=>({label:op,value:d.tot?d.nc/d.tot*100:0,color:opColors[op]||'#60a5fa',sub:`(${d.nc}/${d.tot})`,disp:(Math.round(d.nc/d.tot*1000)/10)})).sort((a,b)=>b.value-a.value);
   const machColors={'FEBA':'#60a5fa','MAVEG':'#4ade80','CEVENINI':'#a78bfa','?':'#888'};
   const machItems=Object.entries(machStat).filter(([,d])=>d.tot>0).map(([m,d])=>({label:m,value:d.tot?d.nc/d.tot*100:0,color:machColors[m]||'#a78bfa',sub:`(${d.nc}/${d.tot})`,disp:(Math.round(d.nc/d.tot*1000)/10)})).sort((a,b)=>b.value-a.value);
-  const clientItems=Object.entries(clientPct).map(([c,arr])=>({label:c,value:avgArr(arr),color:'#34d399',sub:`(${arr.length} cmd)`})).sort((a,b)=>b.value-a.value);
-  const globalNcRate=totBob?Math.round(ncBob/totBob*1000)/10:0;
-
   // % de chute (solde dernière bobine) par client et par matière
   const clientChute={},matChute={};
   fiches.forEach(f=>{
@@ -3254,15 +3366,6 @@ function buildFicheAnalytics(){
       <div id="chuteWrapMat" style="display:none;overflow-x:auto">${svgHBars(matChuteItems,'%',460,70)}</div>
       <div style="font-size:11px;color:var(--muted);margin-top:8px">Chute = solde de la derni\u00e8re bobine (r\u00e9utilisable, part en stock), en % de la mati\u00e8re engag\u00e9e. Bascule Client / Mati\u00e8re.</div>
     </div>`;
-
-  const ncBlock=ncTotal===0
-    ?`<div style="text-align:center;padding:24px;color:var(--green);font-weight:700">✓ Aucune non-conformité enregistrée sur ${totBob} bobines</div>`
-    :`<div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
-        <svg viewBox="0 0 120 120" style="width:120px;height:120px;flex-shrink:0" xmlns="http://www.w3.org/2000/svg">${svgPie(ncSlices,120)}</svg>
-        <div style="flex:1;min-width:160px">${ncLegend}
-          <div style="margin-top:8px;padding-top:8px;border-top:1px solid #2a2a28;font-size:12px;color:#888">Total NC : <strong style="color:#f87171">${ncTotal}</strong> sur ${totBob} bobines · taux ${globalNcRate}%</div>
-        </div>
-      </div>`;
 
   return `
     ${chuteCard}
@@ -3980,7 +4083,6 @@ function showFicheDetail(id,autoPrint){
       ${(f.dateLiv&&f.dateLiv!=='—')?`<span>Livraison client</span><span>${esc(f.dateLiv)}</span>`:''}
       <span>Machine</span><span>${esc(f.machine)}</span>
       <span>Bobine mère</span><span>${f.mother} mm · utile ${f.useful} mm · lame ${f.blade} mm</span>
-      <span>Longueur réf.</span><span>${f.longueur} m</span>
       <span>Lame N°</span><span>${f.lame}</span>
       <span>N° Jour</span><span>${f.numJour}</span>
       ${pkgLine}
@@ -4683,7 +4785,6 @@ function printFiche(){
   <div class="meta"><span><b>Client :</b> ${client}</span><span><b>Réf. :</b> ${ref}${(document.getElementById('fLongueur')?.value||document.getElementById('planLongueur')?.value)?` · ${document.getElementById('fLongueur')?.value||document.getElementById('planLongueur')?.value} ml`:''}</span>
   <span><b>Machine :</b> ${mn}</span><span><b>Lame N° :</b> ${lame}</span>
   <span><b>Opérateur 1 :</b> ${ini}</span>${op2Meta}<span><b>N° Jour :</b> ${numJour}</span>
-  <span><b>Longueur réf. :</b> ${document.getElementById('fLongueur').value||'—'} m</span>
   <span><b>Date :</b> ${today()}</span></div>
   <table><tr><th>Étiquette bobine mère</th><th>Photo</th><th>Nb bob × Larg.</th><th>Test 2ème</th><th>Cumul laizes</th><th>Non-conformité</th><th>Action</th></tr>
   ${rows}</table></body></html>`);
