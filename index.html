@@ -1538,6 +1538,7 @@ let commandTotals = {};
 let cartonByWidth = {};
 let ficheLines = [];
 let loadTargetIdx = null;
+let loadedSaveId = null; // id du plan sauvegardé chargé par l'opérateur (supprimé après confirmation de la fiche)
 let photoTargetId = null; // pour savoir quelle bobine reçoit la photo
 let ficholinePhotos = {}; // id -> Storage URL (ou ancien base64)
 let commandePhoto = ''; // photo de la commande client (niveau plan) -> Storage URL (ou base64)
@@ -1887,7 +1888,7 @@ function onClientChange(){
   const client=document.getElementById('planClient').value;
   const refs=CLIENT_DATA[client]||[];
   document.getElementById('planRef').innerHTML='<option value="">— Référence —</option>'+
-    refs.map(r=>`<option value="${r.ref}">${r.ref}</option>`).join('');
+    refs.map(r=>`<option value="${r.ref}">${r.ref}${r.longueur?` · ${r.longueur} ml`:''}</option>`).join('');
   document.getElementById('planLargeur').value='';
   document.getElementById('planLongueur').value='';
   if(client) applyPackagingRules(client);
@@ -2354,7 +2355,7 @@ function renderSaves(){
     const cmdLine=(s.numCmd)?`<div style="margin-top:5px"><span style="display:inline-block;background:var(--blue);color:#fff;font-weight:800;font-size:13px;padding:3px 10px;border-radius:6px;letter-spacing:.02em">N° ${esc(s.numCmd)}</span>${s.dateLiv?`<span style="margin-left:8px;font-size:12px;color:var(--muted)">📅 livr. ${new Date(s.dateLiv).toLocaleDateString('fr-FR')}</span>`:''}</div>`:'';
     return `<div class="save-card">
       <div class="save-info">
-        <div class="save-title">${esc(s.client)} — ${esc(s.ref)}</div>
+        <div class="save-title">${esc(s.client)} — ${esc(s.ref)}${s.longueur?` · ${esc(String(s.longueur))} ml`:''}</div>
         ${cmdLine}
         <div class="save-meta">${ds} · ${mn} · Bobine ${s.mother} mm</div>
         ${cmdDetail?'<div class="save-meta" style="color:var(--blue)">📋 '+cmdDetail+'</div>':''}
@@ -2384,6 +2385,7 @@ function doLoad(){
   if(!loadTargetIdx) return;
   const s=savesCache.find(x=>x._id===loadTargetIdx);
   if(!s) return;
+  loadedSaveId=s._id; // mémorisé pour suppression auto après confirmation de la fiche
   selectMachine(s.machine);
   document.getElementById('motherWidth').value=s.mother;
   document.getElementById('bladeWidth').value=s.blade;
@@ -2771,6 +2773,16 @@ async function saveCommandeFiche(rows,useful,blade,opts){
       if(tempsRef){tempsCache.unshift({_id:tempsRef.id,...tempsEntry});if(tempsCache.length>2000) tempsCache=tempsCache.slice(0,2000);}
       await logAudit('create','fiches',ficheRef.id,`${client||''} / ${ref||''}${numCmd&&numCmd!=='—'?' / Cmd '+numCmd:''}${opts.modifié?' [MODIFIÉE]':''}`);
       chronoReset();
+      // #5 : si la fiche vient d'un plan sauvegardé chargé, on retire ce plan de Données→Plans (archive douce)
+      if(loadedSaveId){
+        try{
+          await db.collection('saves').doc(loadedSaveId).update({deleted:true,deletedAt:isoNow()});
+          const sv=savesCache.find(x=>x._id===loadedSaveId);
+          if(sv){sv.deleted=true;sv.deletedAt=isoNow();}
+          await logAudit('delete','saves',loadedSaveId,`Plan consommé (fiche créée) — ${client||''} / ${ref||''}`);
+        }catch(e){console.warn('Suppression du plan source impossible :',e);}
+        loadedSaveId=null;
+      }
     }catch(e){
       saveDraftFromSend(ficheEntry,tempsEntry,'');
       alert('⚠ Enregistrement impossible (réseau ?).\n\nLa fiche a été placée en BROUILLON (Données > Brouillons). Reconnecte-toi puis renvoie-la.\n\nDétail : '+e.message);
@@ -2829,7 +2841,7 @@ function resetAll(){
   document.getElementById('ficheLines').innerHTML='';
   ficheLines=[];
   Object.keys(ficholinePhotos).forEach(function(k){delete ficholinePhotos[k];});
-  commandePhoto='';refreshCommandePhotoZone();
+  commandePhoto='';refreshCommandePhotoZone();loadedSaveId=null;
   commandTotals={};
   cartonByWidth={};
   document.getElementById('fClient').value='';
