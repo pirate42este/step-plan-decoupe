@@ -71,6 +71,7 @@ button{cursor:pointer;font-family:inherit}
 .ref-block-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
 .ref-block-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--violet)}
 .ref-band{background:#2a1f3d;border:1px solid var(--violet);color:#c4b5fd;border-radius:10px;padding:9px 14px;font-size:13px;font-weight:700;margin:14px 0 8px}
+.fiche-ref-sep{background:#2a1f3d;border:1px solid var(--violet);color:#c4b5fd;border-radius:10px;padding:8px 14px;font-size:13px;font-weight:700;margin:14px 0 8px;text-align:center}
 .stats-bar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
 .stat-chip{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-size:13px}
 .stat-chip span{font-weight:700;font-size:14px}
@@ -753,6 +754,7 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
 
 <!-- input fichier caché pour les photos -->
 <input type="file" id="photoFileInput" accept="image/*" capture="environment" style="display:none">
+<input type="file" id="blFileInput" accept="image/*,application/pdf" style="display:none">
 
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
@@ -1710,6 +1712,137 @@ function closePhotoViewer(){
   document.getElementById('photoOverlayImg').src='';
 }
 
+// ============================================================
+// BON DE LIVRAISON (BL) — joint par Dominique dans Données → Fiches
+// ============================================================
+// Sur une fiche ENREGISTRÉE, le BL est stocké dans f.bls = [{ref|null,url,type,name}].
+//   ref:null  -> BL global, couvre toute la commande
+//   ref:'X'   -> BL propre à la référence X
+// Rétro-compat : un ancien champ f.bl (objet unique) est traité comme BL global.
+let _blTarget=null; // {ficheId, ref|null}
+
+// Liste normalisée des BL d'une fiche.
+function ficheBLs(f){
+  if(!f) return [];
+  if(Array.isArray(f.bls)) return f.bls;
+  if(f.bl&&f.bl.url) return [{ref:null,...f.bl}]; // ancien format = global
+  return [];
+}
+// Liste des réfs d'une fiche (depuis refGroups si multi, sinon la réf simple).
+function ficheRefList(f){
+  if(f&&Array.isArray(f.refGroups)&&f.refGroups.length>1) return f.refGroups.map(g=>g.ref||'?');
+  return [f&&f.ref?f.ref:'—'];
+}
+// La fiche est-elle couverte par un BL ? (global OU toutes les réfs couvertes)
+function ficheBLComplete(f){
+  const bls=ficheBLs(f);
+  if(bls.some(b=>b.ref==null)) return true;            // BL global
+  const refs=ficheRefList(f);
+  if(refs.length<=1) return bls.length>0;              // mono-réf : un BL suffit
+  const covered=new Set(bls.map(b=>b.ref));
+  return refs.every(r=>covered.has(r));                // multi : chaque réf couverte
+}
+
+// Dominique clique « joindre » : ref=null pour global, sinon la réf.
+function triggerBLFiche(ficheId,ref){
+  if(!canValidate()){alert('Action réservée au pilotage et aux admins.');return;}
+  _blTarget={ficheId, ref:(ref===undefined?null:ref)};
+  const input=document.getElementById('blFileInput');
+  input.value='';
+  input.click();
+}
+async function uploadBLToStorage(blob,ext,contentType){
+  const ts=Date.now();
+  const path='bl/BL_'+ts+'_'+Math.floor(Math.random()*9999)+'.'+ext;
+  const ref=storage.ref(path);
+  await ref.put(blob,{contentType});
+  return await ref.getDownloadURL();
+}
+function fileToBase64(file){
+  return new Promise((resolve,reject)=>{
+    const r=new FileReader();
+    r.onload=()=>resolve(r.result);
+    r.onerror=reject;
+    r.readAsDataURL(file);
+  });
+}
+document.getElementById('blFileInput').addEventListener('change',async function(){
+  const file=this.files&&this.files[0];
+  if(!file||!_blTarget) return;
+  const tgt=_blTarget; _blTarget=null;
+  const f=fichesCache.find(x=>x._id===tgt.ficheId);
+  if(!f){alert('Fiche introuvable.');return;}
+  const isPdf=file.type==='application/pdf'||/\.pdf$/i.test(file.name);
+  try{
+    let url;
+    if(isPdf){
+      url=storage?await uploadBLToStorage(file,'pdf','application/pdf'):await fileToBase64(file);
+    }else{
+      url=storage?await uploadBLToStorage(await compressImageBlob(file,1400,0.7),'jpg','image/jpeg'):await compressImage(file,1400,0.7);
+    }
+    const entry={ref:tgt.ref, url, type:isPdf?'pdf':'image', name:file.name||(isPdf?'BL.pdf':'BL.jpg'), at:isoNow()};
+    // Construit la nouvelle liste : remplace un BL existant de la même portée
+    let bls=ficheBLs(f).slice();
+    // si on ajoute un global, on peut garder les autres ; si on remplace même ref, on enlève l'ancien
+    bls=bls.filter(b=>!(b.ref===entry.ref));
+    bls.push(entry);
+    await db.collection('fiches').doc(f._id).update({bls});
+    f.bls=bls; if('bl' in f) delete f.bl;
+    await logAudit('bl-add','fiches',f._id,`${f.client||''} / ${entry.ref||'global'}`);
+    renderFiches();
+  }catch(e){ alert('Erreur BL : '+e.message); }
+});
+async function deleteBLFiche(ficheId,ref){
+  if(!canValidate()){alert('Action réservée au pilotage.');return;}
+  const f=fichesCache.find(x=>x._id===ficheId);
+  if(!f) return;
+  if(!confirm('Retirer ce BL ?')) return;
+  const target=ficheBLs(f).find(b=>b.ref===(ref===undefined?null:ref));
+  let bls=ficheBLs(f).filter(b=>b.ref!==(ref===undefined?null:ref));
+  try{
+    if(target&&target.url) await deletePhotoFromStorage(target.url);
+    await db.collection('fiches').doc(ficheId).update({bls});
+    f.bls=bls; if('bl' in f) delete f.bl;
+    renderFiches();
+  }catch(e){alert('Erreur : '+e.message);}
+}
+
+// Construit le bloc BL affiché sur la carte fiche (Données).
+// Pour Dominique (canValidate) : boutons joindre/voir/retirer (global + par réf si multi).
+// Pour les autres : statut en lecture seule.
+function blCardBlock(f){
+  const bls=ficheBLs(f);
+  const refs=ficheRefList(f);
+  const multi=refs.length>1;
+  const complete=ficheBLComplete(f);
+  const manage=canValidate();
+  const fid=f._id;
+  const blChip=(b)=>`<a href="${b.url}" target="_blank" rel="noopener" style="color:#4ade80;text-decoration:underline">${b.type==='pdf'?'📄':'🖼'} ${esc(b.name||'BL')}</a>`;
+  const rm=(ref)=>manage?` <button onclick="deleteBLFiche('${fid}',${ref==null?'null':"'"+ref.replace(/'/g,"\\'")+"'"})" style="background:none;border:none;color:#f87171;cursor:pointer;font-size:12px">🗑</button>`:'';
+  const head=complete
+    ? `<div style="color:#4ade80;font-weight:700;font-size:12px;margin-bottom:4px">📎 BL complet</div>`
+    : `<div style="color:#f87171;font-weight:700;font-size:12px;margin-bottom:4px">⛔ BL manquant — validation bloquée</div>`;
+  let body='';
+  const globalBL=bls.find(b=>b.ref==null);
+  if(globalBL){
+    body+=`<div style="font-size:12px;margin:2px 0">Global : ${blChip(globalBL)}${rm(null)}</div>`;
+  }
+  if(multi){
+    refs.forEach(r=>{
+      const b=bls.find(x=>x.ref===r);
+      if(b) body+=`<div style="font-size:12px;margin:2px 0">${esc(r)} : ${blChip(b)}${rm(r)}</div>`;
+      else if(!globalBL) body+=`<div style="font-size:12px;margin:2px 0;color:#f87171">${esc(r)} : aucun BL${manage?` <button onclick="triggerBLFiche('${fid}','${r.replace(/'/g,"\\'")}')" style="background:none;border:1px solid #1e5c30;color:#4ade80;border-radius:5px;cursor:pointer;font-size:11px;padding:1px 6px">📎 joindre</button>`:''}</div>`;
+    });
+  }
+  let actions='';
+  if(manage){
+    actions=`<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">`;
+    if(!globalBL) actions+=`<button onclick="triggerBLFiche('${fid}',null)" style="background:#14371f;border:1px solid #1e5c30;color:#4ade80;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;padding:3px 8px">📎 BL global (toute la commande)</button>`;
+    actions+=`</div>`;
+  }
+  return `<div style="margin:6px 0;padding:8px 10px;border-radius:8px;background:${complete?'rgba(74,222,128,0.08)':'rgba(248,113,113,0.08)'};border:1px solid ${complete?'#1e5c30':'#7a2222'}">${head}${body}${actions}</div>`;
+}
+
 // Photo de la commande client (niveau plan) — réutilise la plomberie des photos de ligne
 function refreshCommandePhotoZone(){
   const zone=document.getElementById('commandePhotoZone');
@@ -1784,17 +1917,17 @@ function importPlanToFiche(opts){
   opts=opts||{};
   const auto=!!opts.auto;
   try{
-    const rows=getOrderRows();
-    if(!rows.length){
+    const computed=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
+    if(!computed.length){
       if(!auto) alert('⚠ Aucune ligne de commande dans le Plan.\n\nRemplis le plan d\'abord.');
       return;
     }
-    const useful=getUseful(),blade=getBlade();
-    const tooWide=rows.some(r=>r.width>useful);
+    const tooWide=computed.some(c=>c.oversize.length);
     if(tooWide){
-      if(!auto) alert('⚠ Une largeur dépasse la largeur utile ('+useful+' mm).\n\nCorrige le plan avant d\'importer dans la fiche.');
+      if(!auto) alert('⚠ Une largeur dépasse la largeur utile de sa référence.\n\nCorrige le plan avant d\'importer dans la fiche.');
       return;
     }
+    const multi=computed.length>1;
 
     // Si l'opérateur a déjà commencé à travailler dans la Fiche :
     // - en auto : on ne touche À RIEN (protège le travail terrain)
@@ -1806,14 +1939,19 @@ function importPlanToFiche(opts){
       if(!ok) return;
     }
 
-    // En-têtes : copie depuis le Plan
+    // En-têtes : copie depuis le Plan. En multi-réf, fRef liste toutes les réfs.
     const copy=(planId,ficheId)=>{
       const p=document.getElementById(planId), f=document.getElementById(ficheId);
       if(p&&f) f.value=p.value||'';
     };
     copy('planClient','fClient');
-    copy('planRef','fRef');
-    copy('planLongueur','fLongueur');
+    if(multi){
+      const fRef=document.getElementById('fRef'); if(fRef) fRef.value=computed.map(c=>c.ref||'?').join(' + ');
+      const fLong=document.getElementById('fLongueur'); if(fLong) fLong.value=computed.map(c=>c.longueur||'—').join(' / ');
+    }else{
+      copy('planRef','fRef');
+      copy('planLongueur','fLongueur');
+    }
     copy('planNumCmd','fNumCmd');
     copy('planDateLiv','fDateLiv');
     ['Palette','Type','Etiquetage','Cerclage'].forEach(k=>copy('plan'+k,'f'+k));
@@ -1825,29 +1963,42 @@ function importPlanToFiche(opts){
     ficheLines=[];
     ficholinePhotos={};
 
-    // Régénération depuis le Plan
+    // Cumuls de commande (toutes réfs confondues)
     commandTotals={};
     cartonByWidth={};
-    rows.forEach(r=>{commandTotals[r.width]=(commandTotals[r.width]||0)+r.qty; if(r.carton>0) cartonByWidth[r.width]=r.carton;});
-    const groups=groupBobines(pack(expandDemand(rows),useful,blade),blade);
+    computed.forEach(c=>c.rows.forEach(r=>{commandTotals[r.width]=(commandTotals[r.width]||0)+r.qty; if(r.carton>0) cartonByWidth[r.width]=r.carton;}));
+
+    // Génération des bobines, réf par réf, avec séparateur visuel entre réfs.
     let bi=1;
-    groups.forEach(g=>{
-      for(let ci=0;ci<g.count;ci++){
-        addFicheLine({label:'BOB-'+String(bi).padStart(3,'0'),conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + ')});
-        bi++;
-      }
+    computed.forEach((c,ci)=>{
+      if(multi) insertFicheRefSeparator(c.ref||('Référence '+(ci+1)), c.useful);
+      c.planGroups.forEach(g=>{
+        for(let k=0;k<g.count;k++){
+          const lbl=(multi&&c.ref?c.ref+' · ':'')+'BOB-'+String(bi).padStart(3,'0');
+          addFicheLine({label:lbl, conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + '),
+            ref:c.ref||'', useful:c.useful, blade:c.blade});
+          bi++;
+        }
+      });
     });
     refreshOp2BobineList();
     refreshEtiquetteSolde();
 
     if(!auto){
       showPage(1);
-      showToast('✓ Fiche créée — '+ficheLines.length+' bobine(s) à découper','ok');
+      showToast('✓ Fiche créée — '+ficheLines.length+' bobine(s) à découper'+(multi?' ('+computed.length+' réfs)':''),'ok');
     }
   }catch(e){
     console.error('importPlanToFiche a échoué :',e);
     if(!auto) alert('Erreur lors de l\'import : '+(e.message||e)+'\n\nRecharge la page et réessaie.');
   }
+}
+// Insère une bande de séparation de référence dans la liste des bobines de la fiche.
+function insertFicheRefSeparator(ref,useful){
+  const div=document.createElement('div');
+  div.className='fiche-ref-sep';
+  div.innerHTML=`🎞 ${esc(ref)} — laize ${fmt(useful)} mm`;
+  document.getElementById('ficheLines').appendChild(div);
 }
 
 function switchTab(tab){
@@ -2255,7 +2406,6 @@ function groupBobines(bobines,blade){
 // champs historiques (planRef, motherWidth, edgeLoss, planLongueur, .order-row).
 function getRefGroups(){
   const blocks=document.querySelectorAll('.ref-block');
-  const blade=getBlade();
   if(blocks.length){
     const groups=[];
     blocks.forEach(bl=>{
@@ -2263,6 +2413,7 @@ function getRefGroups(){
       const longueur=bl.querySelector('[data-rb="longueur"]')?.value||'';
       const mother=parseNum(bl.querySelector('[data-rb="mother"]')?.value);
       const edge=parseNum(bl.querySelector('[data-rb="edge"]')?.value);
+      const blade=parseNum(bl.querySelector('[data-rb="blade"]')?.value);
       const useful=Math.max(0,mother-edge);
       const rows=[];
       bl.querySelectorAll('.order-row').forEach(row=>{
@@ -2283,9 +2434,46 @@ function getRefGroups(){
     mother:parseNum(document.getElementById('motherWidth')?.value),
     edge:parseNum(document.getElementById('edgeLoss')?.value),
     useful:getUseful(),
-    blade,
+    blade:getBlade(),
     rows:getOrderRows()
   }];
+}
+
+// Sérialise les blocs réf pour la sauvegarde (structure persistée).
+function serializeRefGroups(){
+  return getRefGroups().map(g=>({
+    ref:g.ref, longueur:g.longueur, mother:g.mother, edge:g.edge, blade:g.blade, rows:g.rows
+  }));
+}
+// Reconstruit les blocs réf à l'écran depuis une structure sauvegardée.
+// Le bloc #1 réutilise les champs historiques ; les suivants sont des blocs "extra".
+function restoreRefGroups(arr){
+  if(!arr||!arr.length) return;
+  // Réinitialise : retire les blocs extra, vide les lignes du bloc #1
+  document.querySelectorAll('.ref-block.extra').forEach(b=>b.remove());
+  _refBlockSeq=1; renumberRefBlocks();
+  document.querySelectorAll('.ref-block .rb-rows .order-row').forEach(r=>r.remove());
+  // Bloc #1
+  const g0=arr[0];
+  const setRb=(sel,v)=>{const el=document.querySelector('.ref-block [data-rb="'+sel+'"]');if(el)el.value=v==null?'':v;};
+  setRb('mother',g0.mother); setRb('edge',g0.edge); setRb('blade',g0.blade);
+  setRb('longueur',g0.longueur);
+  const refSel=document.querySelector('.ref-block [data-rb="ref"]'); if(refSel) refSel.value=g0.ref||'';
+  const cont0=document.querySelector('.ref-block .rb-rows');
+  (g0.rows||[]).forEach(r=>cont0.appendChild(makeOrderRow(r.qty,r.width,r.carton||'')));
+  // Blocs suivants
+  for(let i=1;i<arr.length;i++){
+    addRefBlock();
+    const bl=document.querySelectorAll('.ref-block')[i];
+    const gi=arr[i];
+    const set=(sel,v)=>{const el=bl.querySelector('[data-rb="'+sel+'"]');if(el)el.value=v==null?'':v;};
+    set('mother',gi.mother); set('edge',gi.edge); set('blade',gi.blade); set('longueur',gi.longueur);
+    const rs=bl.querySelector('[data-rb="ref"]'); if(rs) rs.value=gi.ref||'';
+    const cont=bl.querySelector('.rb-rows');
+    cont.querySelectorAll('.order-row').forEach(r=>r.remove()); // addRefBlock met 2 lignes vides
+    (gi.rows||[]).forEach(r=>cont.appendChild(makeOrderRow(r.qty,r.width,r.carton||'')));
+  }
+  updateCartonVisibility();
 }
 
 // Packe chaque ref-group indépendamment avec sa propre laize utile.
@@ -2483,14 +2671,18 @@ function printEtiquette(d){
 // Calcule le solde (laize restante) sur la dernière bobine RÉELLE de la fiche.
 // Si la fiche est vide, repli sur le pack de la commande.
 function getEtiquetteSoldeData(){
-  const useful=getUseful(),blade=getBlade();
-  if(useful<=0) return null;
-  let pattern=null;
+  let useful=getUseful(),blade=getBlade();
+  let pattern=null, ref=document.getElementById('fRef')?.value||document.getElementById('planRef')?.value||'';
   if(ficheLines.length){
-    const lastId=ficheLines[ficheLines.length-1].id;
-    const p=parseConf(document.getElementById('flConf_'+lastId)?.value||'');
+    const last=ficheLines[ficheLines.length-1];
+    // Laize/lame propres à la réf de la dernière bobine si dispo (multi-réf)
+    if(last.useful>0) useful=last.useful;
+    if(last.blade>0) blade=last.blade;
+    if(last.ref) ref=last.ref;
+    const p=parseConf(document.getElementById('flConf_'+last.id)?.value||'');
     if(p.length) pattern=p;
   }
+  if(useful<=0) return null;
   if(!pattern){
     const rows=getOrderRows();
     if(!rows.length) return null;
@@ -2501,7 +2693,6 @@ function getEtiquetteSoldeData(){
   }
   const solde=useful-calcStats(pattern,blade).total;
   const mn=getMachineLabel(ficheMachine||currentMachine);
-  const ref=document.getElementById('fRef')?.value||document.getElementById('planRef')?.value||'';
   return {mn,ref,solde:fmt(solde),date:today()};
 }
 function refreshEtiquetteSolde(){
@@ -2563,16 +2754,22 @@ function openSaveModal(){
 function closeSaveModal(){document.getElementById('saveModal').classList.remove('open');}
 async function doSave(){
   var rows=getOrderRows();
+  const refGroups=serializeRefGroups();
+  const multi=refGroups.length>1;
+  const allRows=[].concat(...refGroups.map(g=>g.rows||[]));
   const entry={
     rows:rows,machine:currentMachine,
+    refGroups:refGroups,                       // multi-réfs (nouveau)
     mother:document.getElementById('motherWidth').value,
     blade:document.getElementById('bladeWidth').value,
     edgeLoss:document.getElementById('edgeLoss').value,
     client:document.getElementById('saveClient').value||'—',
-    ref:document.getElementById('saveRef').value||'—',
+    ref:multi?refGroups.map(g=>g.ref||'?').join(' + '):(document.getElementById('saveRef').value||'—'),
     numCmd:document.getElementById('planNumCmd').value||'',
     dateLiv:document.getElementById('planDateLiv').value||'',
-    commandeDetail:rows.map(function(r){return r.qty+'×'+r.width+'mm';}).join(' + '),
+    commandeDetail:multi
+      ? refGroups.map(g=>(g.ref||'?')+': '+(g.rows||[]).map(r=>r.qty+'×'+r.width+'mm').join(' + ')).join('  |  ')
+      : rows.map(function(r){return r.qty+'×'+r.width+'mm';}).join(' + '),
     largeur:document.getElementById('planLargeur').value,
     longueur:document.getElementById('planLongueur').value,
     palette:document.getElementById('planPalette').value||'',
@@ -2673,12 +2870,15 @@ function doLoad(){
   document.getElementById('planNotesEmballage').value=s.notesEmballage||'';
   document.getElementById('planNumCmd').value=s.numCmd||'';
   document.getElementById('planDateLiv').value=s.dateLiv||'';
+  const hasGroups=Array.isArray(s.refGroups)&&s.refGroups.length>0;
   if(s.client&&s.client!=='—'){
     const selClient=document.getElementById('planClient');
     selClient.value=s.client;
     onClientChange();                       // peuple les réf (CLIENT_DATA = synchrone)
-    document.getElementById('planRef').value=s.ref||'';
-    onRefChange();
+    if(!hasGroups){
+      document.getElementById('planRef').value=s.ref||'';
+      onRefChange();
+    }
     // ré-appliquer le packaging sauvegardé (écrase les règles auto du client)
     document.getElementById('planType').value=s.typeCond||s.carton||'';
     document.getElementById('planPalette').value=s.palette||'';
@@ -2687,8 +2887,14 @@ function doLoad(){
     document.getElementById('planNotesEmballage').value=s.notesEmballage||'';
     document.getElementById('packagingAlert').classList.add('hidden');
   }
-  document.querySelectorAll('.order-row').forEach(r=>r.remove());
-  s.rows.forEach(r=>addOrderRow(r.qty,r.width,r.carton||''));
+  if(hasGroups){
+    // Plan multi-réfs : reconstruit tous les blocs réf
+    restoreRefGroups(s.refGroups);
+  }else{
+    // Plan mono-réf historique
+    document.querySelectorAll('.order-row').forEach(r=>r.remove());
+    (s.rows||[]).forEach(r=>addOrderRow(r.qty,r.width,r.carton||''));
+  }
   commandePhoto=s.commandePhoto||'';refreshCommandePhotoZone();
   recalcPlan();closeLoadModal();showPage(0);
 }
@@ -2787,12 +2993,14 @@ function buildRattrapageGroups(deficit,useful,blade){
 }
 
 async function confirmCommande(){
-  const rows=getOrderRows();
+  const computed=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
+  const multi=computed.length>1;
+  const rows=multi?[].concat(...computed.map(c=>c.rows)):getOrderRows();
   if(!rows.length){alert('Aucune commande à confirmer.');return;}
   const useful=getUseful(),blade=getBlade();
-  const over=rows.filter(r=>r.width>useful);
+  const over=[].concat(...computed.map(c=>c.oversize));
   if(over.length){
-    alert(`⛔ Confirmation bloquée.\n\n${over.length} laize(s) dépassent la largeur utile (${fmt(useful)} mm) : ${over.map(r=>fmt(r.width)+' mm').join(', ')}.\nCorrige la commande avant de confirmer.`);
+    alert(`⛔ Confirmation bloquée.\n\n${over.length} laize(s) dépassent la largeur utile de leur référence : ${over.map(r=>fmt(r.width)+' mm').join(', ')}.\nCorrige la commande avant de confirmer.`);
     return;
   }
   if(ficheLines.length===0){
@@ -2971,8 +3179,11 @@ function applySurplusDeduction(surplus){
 // Enregistre la fiche confirmée dans Firestore (sans mail), puis reset → Plan vierge
 async function saveCommandeFiche(rows,useful,blade,opts){
   opts=opts||{};
-  const bobines=pack(expandDemand(rows),useful,blade);
-  const groups=groupBobines(bobines,blade);
+  // Multi-réfs : recompose les bobines/groups réf par réf (laize propre à chaque réf)
+  const computed=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
+  const multi=computed.length>1;
+  const bobines=multi?[].concat(...computed.map(c=>c.bobines)):pack(expandDemand(rows),useful,blade);
+  const groups=multi?[].concat(...computed.map(c=>c.planGroups)):groupBobines(bobines,blade);
   const nbPlan=bobines.length;
   const nbFiche=ficheLines.length;
   const hasEcart=opts.modifié||(nbFiche!==nbPlan);
@@ -2981,15 +3192,15 @@ async function saveCommandeFiche(rows,useful,blade,opts){
 
   const g=id=>document.getElementById(id);
   const client=g('planClient').value||g('fClient').value||'—';
-  const ref=g('planRef').value||g('fRef').value||'—';
+  const ref=multi?computed.map(c=>c.ref||'?').join(' + '):(g('planRef').value||g('fRef').value||'—');
   const ini=g('fInitiales').value||'—';
   const ini2=g('fOp2Active').checked?(g('fInitiales2').value||'—'):'';
   const op2Bob=g('fOp2Active').checked?(g('fOp2Bobine').value||''):'';
   const machine=getMachineLabel(ficheMachine);
   const lame=g('fNumLame').value||'—';
   const numJour=g('fNumJour').value||'—';
-  const longueur=g('fLongueur').value||g('planLongueur').value||'—';
-  const mother=fmt(parseNum(g('motherWidth').value));
+  const longueur=multi?computed.map(c=>c.longueur||'—').join(' / '):(g('fLongueur').value||g('planLongueur').value||'—');
+  const mother=multi?computed.map(c=>fmt(c.mother)).join(' / '):fmt(parseNum(g('motherWidth').value));
   const typeCond=g('fType').value||g('planType').value||'—';
   const palette=g('fPalette').value||g('planPalette').value||'—';
   const etiquetage=g('fEtiquetage').value||g('planEtiquetage').value||'—';
@@ -2998,8 +3209,9 @@ async function saveCommandeFiche(rows,useful,blade,opts){
   const numCmd=g('fNumCmd').value||g('planNumCmd').value||'—';
   const dateLivRaw=g('fDateLiv').value||g('planDateLiv').value;
   const dateLiv=dateLivRaw?new Date(dateLivRaw).toLocaleDateString('fr-FR'):'—';
-  const totalMat=bobines.length*useful;
-  const totalUsed=bobines.reduce((s,p)=>s+calcStats(p,blade).total,0);
+  // Perte globale : somme sur toutes les réfs (chacune sa laize)
+  const totalMat=multi?computed.reduce((s,c)=>s+c.stats.totalMat,0):bobines.length*useful;
+  const totalUsed=multi?computed.reduce((s,c)=>s+c.stats.totalUsed,0):bobines.reduce((s,p)=>s+calcStats(p,blade).total,0);
   const pct=totalMat>0?((totalMat-totalUsed)/totalMat*100):0;
   const tempsStr=chronoSec>0
     ?`${fmtTimeFr(chronoSec)} (${ini} — ${today()})`
@@ -3008,16 +3220,31 @@ async function saveCommandeFiche(rows,useful,blade,opts){
   const ficheData=getFicheLinesData();
   const planName=buildPlanName();
   const ficheDetailTagged=ficheData.map((fd,i)=>({...fd,horsPlan:(i+1)>nbPlan}));
+  // Groupes pour l'historique : chaque groupe garde la laize de sa réf
+  let groupsForRecord;
+  if(multi){
+    groupsForRecord=[];
+    computed.forEach(c=>{
+      c.planGroups.forEach(gp=>{
+        const tot=calcStats(gp.pattern,c.blade).total;
+        groupsForRecord.push({label:(c.ref?c.ref+' · ':'')+makeLabel(gp.pattern),count:gp.count,total:fmt(tot),waste:fmt(c.useful-tot),isLast:false});
+      });
+    });
+  }else{
+    groupsForRecord=groups.map(gp=>({label:makeLabel(gp.pattern),count:gp.count,total:fmt(calcStats(gp.pattern,blade).total),waste:fmt(useful-calcStats(gp.pattern,blade).total),isLast:false}));
+  }
 
   const ficheEntry={
     name:planName,date:isoNow(),client,ref,ini,ini2,op2Bob,machine,lame,numJour,longueur,mother,rows,
+    refGroups:multi?serializeRefGroups():null,
     numCmd,dateLiv,deleted:false,cartonByWidth:{...cartonByWidth},
     palette,typeCond,etiquetage,cerclage,notesEmballage:notesEmb,
-    groups:groups.map(gp=>({label:makeLabel(gp.pattern),count:gp.count,total:fmt(calcStats(gp.pattern,blade).total),waste:fmt(useful-calcStats(gp.pattern,blade).total),isLast:false})),
-    useful:fmt(useful),blade:fmt(blade),pct:pct.toFixed(1),tempsStr,totalBobines:bobines.length,
+    groups:groupsForRecord,
+    useful:multi?computed.map(c=>fmt(c.useful)).join(' / '):fmt(useful),blade:fmt(blade),pct:pct.toFixed(1),tempsStr,totalBobines:bobines.length,
     ficheDetail:ficheDetailTagged,
     nbPlan,nbFiche,hasEcart,ecartMsg,modifie:!!opts.modifié,
     commandePhoto:commandePhoto||'',
+    bls:[],
     valide:null,valideBy:null,valideAt:null
   };
   let tempsEntry=null;
@@ -3157,12 +3384,14 @@ function resetAll(){
 }
 
 function getFicheLinesData(){
-  return ficheLines.map(({id})=>{
+  return ficheLines.map((L)=>{
+    const id=L.id;
     const get=s=>document.getElementById(s+'_'+id);
     const ncInput=k=>get('nc_'+k)?.querySelector('input')?.checked||false;
     return {
       label:get('flLabel')?.value||'',
       conf:get('flConf')?.value||'',
+      ref:L.ref||'', useful:L.useful||0, blade:L.blade||0,
       devi:get('flDevi')?.checked||false,
       droit:get('flDroit')?.checked||false,
       conforme:get('flTest2main')?.checked||false,
@@ -3836,6 +4065,7 @@ function renderFiches(){
         <div class="fc-status" style="${statusColor}">${statusBadge}</div>
       </div>
       ${f.modifie?`<div style="margin:6px 0;padding:6px 10px;border-radius:8px;background:rgba(245,158,11,0.10);border:1px solid #caa15a;color:#d9a441;font-size:12px;font-weight:600">⚠ Modifiée${f.ecartMsg?` — ${esc(f.ecartMsg)}`:''}</div>`:''}
+      ${blCardBlock(f)}
       ${numCmdHas?`<div class="fc-cmd"><span class="fc-cmd-badge">N° ${esc(f.numCmd)}</span>${f.dateLiv&&f.dateLiv!=='—'?`<span class="fc-cmd-liv">📅 Livr. ${esc(f.dateLiv)}</span>`:''}</div>`:''}
       <div class="fc-grid">
         <div class="fc-cell"><span class="fc-lbl">Client</span><span class="fc-val">${esc(f.client||'—')}</span></div>
@@ -3862,6 +4092,14 @@ async function validateFiche(id){
   if(!canValidate()){alert('Validation réservée au pilotage et aux admins.');return;}
   const f=fichesCache.find(x=>x._id===id);
   if(!f) return;
+  if(!ficheBLComplete(f)){
+    const refs=ficheRefList(f);
+    const msg=refs.length>1
+      ? '⛔ Validation impossible : il manque un bon de livraison.\n\nJoins soit un BL global (toute la commande), soit un BL pour chaque référence ('+refs.join(', ')+').'
+      : '⛔ Validation impossible : aucun bon de livraison (BL) n\'est joint à cette fiche.\n\nJoins le BL avant de valider.';
+    alert(msg);
+    return;
+  }
   const by=currentUser?(currentUser.nom||currentUser.ini):'?';
   try{
     const at=isoNow();
@@ -4205,6 +4443,7 @@ function showFicheDetail(id,autoPrint){
       ${pkgLine}
       ${notesLine}
       <span>Temps</span><span style="color:${f.tempsStr==='non enregistré'?'#888':'#4ade80'}">${f.tempsStr}</span>
+      <span>Bon de livraison</span><span>${(()=>{const bls=ficheBLs(f);if(!bls.length)return '<span style="color:#f87171;font-weight:700">⛔ Aucun BL joint</span>';return bls.map(b=>`<a href="${b.url}" target="_blank" rel="noopener" style="color:#4ade80;font-weight:700">📎 ${esc((b.ref?b.ref+' : ':'')+(b.name||(b.type==='pdf'?'BL.pdf':'BL')))}</a>`).join('<br>');})()}</span>
       <span>Validation</span><span>${f.valide===true?'✓ Validée'+(f.valideBy?' par '+f.valideBy:'')+(f.valideAt?' le '+new Date(f.valideAt).toLocaleDateString('fr-FR'):''):f.valide===false?'✗ Refusée'+(f.valideBy?' par '+f.valideBy:''):'⏳ En attente'}</span>
     </div>
   </div>
@@ -4523,7 +4762,8 @@ function getMachineLabel(m){return {feba:'FEBA',maveg:'MAVEG',cevenini:'CEVENINI
 function addFicheLine(data){
   const id='fl_'+Date.now()+'_'+Math.floor(Math.random()*9999);
   data=data||{};
-  ficheLines.push({id,rattrapage:!!data.rattrapage,origConf:(data.conf||'').replace(/x/gi,'×').trim()});
+  ficheLines.push({id,rattrapage:!!data.rattrapage,origConf:(data.conf||'').replace(/x/gi,'×').trim(),
+    ref:data.ref||'', useful:data.useful||0, blade:data.blade||0});
   const div=document.createElement('div');
   div.className='fiche-line';div.id=id;
   if(data.rattrapage){ div.style.borderColor='#caa15a'; div.style.background='rgba(245,158,11,0.05)'; }
@@ -4748,7 +4988,7 @@ function serializeFicheState(){
     plan:{machine:currentMachine,mother:g('motherWidth')?.value||'',blade:g('bladeWidth')?.value||'',edge:g('edgeLoss')?.value||'',
       client:g('planClient')?.value||'',ref:g('planRef')?.value||'',largeur:g('planLargeur')?.value||'',longueur:g('planLongueur')?.value||'',
       numCmd:g('planNumCmd')?.value||'',dateLiv:g('planDateLiv')?.value||'',type:g('planType')?.value||'',palette:g('planPalette')?.value||'',
-      etiquetage:g('planEtiquetage')?.value||'',cerclage:g('planCerclage')?.value||'',notes:g('planNotesEmballage')?.value||'',rows:getOrderRows(),commandePhoto:commandePhoto||''},
+      etiquetage:g('planEtiquetage')?.value||'',cerclage:g('planCerclage')?.value||'',notes:g('planNotesEmballage')?.value||'',rows:getOrderRows(),refGroups:serializeRefGroups(),commandePhoto:commandePhoto||''},
     fiche:{machine:ficheMachine,ini:g('fInitiales')?.value||'',ini2:g('fInitiales2')?.value||'',op2Active:g('fOp2Active')?.checked||false,op2Bob:g('fOp2Bobine')?.value||'',
       lame:g('fNumLame')?.value||'',numJour:g('fNumJour')?.value||'',longueur:g('fLongueur')?.value||'',client:g('fClient')?.value||'',ref:g('fRef')?.value||'',
       numCmd:g('fNumCmd')?.value||'',dateLiv:g('fDateLiv')?.value||'',type:g('fType')?.value||'',palette:g('fPalette')?.value||'',etiquetage:g('fEtiquetage')?.value||'',cerclage:g('fCerclage')?.value||'',notes:g('fNotesEmballage')?.value||''},
@@ -4785,7 +5025,7 @@ function resumeDraft(id){
   alert('Brouillon chargé dans la Fiche. Vérifie les bobines puis envoie.');
 }
 function restoreFicheLineFromData(ld){
-  addFicheLine({label:ld.label||'',conf:ld.conf||''});
+  addFicheLine({label:ld.label||'',conf:ld.conf||'',ref:ld.ref||'',useful:ld.useful||0,blade:ld.blade||0});
   const id=ficheLines[ficheLines.length-1].id;
   if(ld.photo){ficholinePhotos[id]=ld.photo;refreshPhotoZone(id);}
   const setCk=(k,val)=>{const el=document.getElementById('nc_'+k+'_'+id);const cb=el&&el.querySelector('input');if(cb)cb.checked=!!val;};
@@ -4821,14 +5061,20 @@ function restoreFicheState(st){
   if(g('planEtiquetage'))g('planEtiquetage').value=st.plan.etiquetage;
   if(g('planCerclage'))g('planCerclage').value=st.plan.cerclage;
   if(g('planNotesEmballage'))g('planNotesEmballage').value=st.plan.notes;
-  document.querySelectorAll('.ref-block.extra').forEach(b=>b.remove());
-  _refBlockSeq=1; renumberRefBlocks();
-  document.querySelectorAll('.order-row').forEach(r=>r.remove());
-  (st.plan.rows||[]).forEach(r=>addOrderRow(r.qty,r.width,r.carton||''));
+  const hasGroups=Array.isArray(st.plan.refGroups)&&st.plan.refGroups.length>0;
+  if(hasGroups){
+    restoreRefGroups(st.plan.refGroups);
+  }else{
+    document.querySelectorAll('.ref-block.extra').forEach(b=>b.remove());
+    _refBlockSeq=1; renumberRefBlocks();
+    document.querySelectorAll('.order-row').forEach(r=>r.remove());
+    (st.plan.rows||[]).forEach(r=>addOrderRow(r.qty,r.width,r.carton||''));
+  }
   commandePhoto=st.plan.commandePhoto||'';refreshCommandePhotoZone();
   recalcPlan();
   commandTotals={};cartonByWidth={};
-  (st.plan.rows||[]).forEach(r=>{commandTotals[r.width]=(commandTotals[r.width]||0)+r.qty; if(r.carton>0) cartonByWidth[r.width]=r.carton;});
+  const allRowsR=hasGroups?[].concat(...st.plan.refGroups.map(x=>x.rows||[])):(st.plan.rows||[]);
+  allRowsR.forEach(r=>{commandTotals[r.width]=(commandTotals[r.width]||0)+r.qty; if(r.carton>0) cartonByWidth[r.width]=r.carton;});
   selectFicheMachine(st.fiche.machine||st.plan.machine||'feba');
   const setV=(id,v)=>{const el=g(id);if(el)el.value=v;};
   setV('fInitiales',st.fiche.ini);setV('fInitiales2',st.fiche.ini2);setV('fOp2Bobine',st.fiche.op2Bob);
