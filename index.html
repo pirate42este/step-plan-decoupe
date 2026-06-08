@@ -2563,20 +2563,55 @@ function packRefGroups(groups){
   });
 }
 
+// Agrégat multi-réf pour les compteurs et enregistrements temps :
+//  - rows         : toutes les lignes de toutes les réfs (cumul des laizes)
+//  - totalLaizes  : somme des quantités, toutes réfs
+//  - nbBobines    : somme des bobines mères, packées RÉF PAR RÉF (chacune sa laize)
+//  - commandeDetail : "REF: q×l + … | REF2: …" en multi, "q×l + …" en mono
+// Évite l'ancien biais (pack sur la 1re réf uniquement) qui sous-comptait les bobines.
+function getOrderAggregate(){
+  const groups=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
+  const rows=[].concat(...groups.map(c=>c.rows));
+  const totalLaizes=rows.reduce((s,r)=>s+r.qty,0);
+  const nbBobines=groups.reduce((s,c)=>s+c.bobines.length,0);
+  const multi=groups.length>1;
+  const commandeDetail=multi
+    ? groups.map(c=>(c.ref||'?')+': '+c.rows.map(r=>r.qty+'×'+r.width+'mm').join(' + ')).join('  |  ')
+    : rows.map(r=>r.qty+'×'+r.width+'mm').join(' + ');
+  return {groups,rows,totalLaizes,nbBobines,multi,commandeDetail};
+}
+
 // ============================================================
 // RECALC PLAN
 // ============================================================
 // Anti-freeze : pendant la saisie, on ne relance le calcul d'optimisation
 // qu'une fois la frappe arrêtée (2 s), au lieu d'à chaque caractère.
 let _recalcPlanTimer=null;
+// Calcule le délai d'attente avant de relancer l'optimisation. Plus la commande
+// cumule de laizes DISTINCTES (coût ~ largeurs distinctes × laize) et de quantité,
+// plus on attend, pour ne pas relancer un calcul lourd à chaque frappe sur un PC
+// d'atelier. Fonction pure (testable hors DOM).
+function computePlanDelay(groups){
+  let totalQty=0; const widths=new Set();
+  (groups||[]).forEach(g=>(g.rows||[]).forEach(r=>{if(r.qty>0&&r.width>0){totalQty+=r.qty;widths.add(r.width);}}));
+  const distinct=widths.size;
+  let delay=1800;                                   // commande légère : réactif
+  if(totalQty>=300 || distinct>=20) delay=3000;     // moyenne : on respire
+  if(totalQty>=600 || distinct>=40) delay=4500;     // lourde : on laisse le temps au PC
+  return {delay, heavy:delay>=4500, totalQty, distinct};
+}
 function debouncedRecalcPlan(){
   clearTimeout(_recalcPlanTimer);
-  // Tempo adaptative : sur les grosses saisies (beaucoup de bobines attendues),
-  // on laisse 3 s pour éviter de relancer le calcul à chaque frappe et faire ramer le PC.
   let delay=2000;
   try{
-    const totalQty=getRefGroups().reduce((s,g)=>s+g.rows.reduce((a,r)=>a+(r.qty>0?r.qty:0),0),0);
-    if(totalQty>=300) delay=3000;
+    const d=computePlanDelay(getRefGroups());
+    delay=d.delay;
+    // Retour visuel immédiat pendant l'attente sur les gros plans : un calcul d'1–2 s
+    // sur un vieux PC ressemblerait sinon à un blocage. Remplacé dès que recalcPlan tourne.
+    if(d.heavy){
+      const statsEl=document.getElementById('statsBar');
+      if(statsEl) statsEl.innerHTML='<div style="flex-basis:100%;width:100%;background:#3a2e14;border:2px solid var(--orange);color:#fcd34d;border-radius:10px;padding:10px 14px;font-size:13px;font-weight:700">⏳ Calcul du plan en cours… (commande volumineuse — patiente quelques secondes)</div>';
+    }
   }catch(e){}
   _recalcPlanTimer=setTimeout(recalcPlan,delay);
 }
@@ -2703,39 +2738,55 @@ function openPrintWindow(html){
   else{const b=new Blob([html],{type:'text/html'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='impression_STEP.html';a.click();}
 }
 function getPlanHTML(){
-  const rows=getOrderRows(),useful=getUseful(),blade=getBlade();
-  const bobines=pack(expandDemand(rows),useful,blade);
-  const groups=groupBobines(bobines,blade);
+  const groups=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
   const mn=getMachineLabel(currentMachine);
-  const mother=parseNum(document.getElementById('motherWidth').value);
   const client=document.getElementById('planClient').value||'—';
-  const ref=document.getElementById('planRef').value||'—';
   const typeCond=document.getElementById('planType').value||'—';
   const palette=document.getElementById('planPalette').value||'—';
   const etiquetage=document.getElementById('planEtiquetage').value||'—';
   const cerclage=document.getElementById('planCerclage').value||'—';
   const notesEmb=document.getElementById('planNotesEmballage').value||'';
-  let tRows='',bNum=1;
-  groups.forEach((g,gi)=>{
-    const st=calcStats(g.pattern,blade),waste=useful-st.total,isLast=gi===groups.length-1;
-    tRows+=`<tr style="${isLast?'background:#fffbea;font-style:italic':''}">
-      <td>${g.count>1?g.count+' bobines':'1 bobine'}</td>
-      <td><strong>${makeLabel(g.pattern)}</strong></td>
-      <td>${st.laizes}</td>
-      <td>${fmt(st.total)} / ${fmt(useful)}</td>
-      <td>${isLast?'Solde '+fmt(waste)+' mm':fmt(waste)+' mm'}</td></tr>`;
-    bNum+=g.count;
+  const multi=groups.length>1;
+  const mono=groups[0]||{};
+  const refLabel=multi?groups.map(c=>c.ref||'?').join(' + '):(mono.ref||document.getElementById('planRef').value||'—');
+
+  // Une table par référence (chacune sa laize utile / sa lame).
+  let sections='';
+  groups.forEach((c,ci)=>{
+    const useful=c.useful, blade=c.blade;
+    let tRows='';
+    c.planGroups.forEach((g,gi)=>{
+      const st=calcStats(g.pattern,blade),waste=useful-st.total,isLast=gi===c.planGroups.length-1;
+      tRows+=`<tr style="${isLast?'background:#fffbea;font-style:italic':''}">
+        <td>${g.count>1?g.count+' bobines':'1 bobine'}</td>
+        <td><strong>${makeLabel(g.pattern)}</strong></td>
+        <td>${st.laizes}</td>
+        <td>${fmt(st.total)} / ${fmt(useful)}</td>
+        <td>${isLast?'Solde '+fmt(waste)+' mm':fmt(waste)+' mm'}</td></tr>`;
+    });
+    if(multi){
+      sections+=`<h3 style="font-size:14px;margin:18px 0 6px;color:#5b21b6">🎞 ${esc(c.ref||('Référence '+(ci+1)))} — bobine mère ${fmt(c.mother)} mm · utile ${fmt(useful)} mm · lame ${fmt(blade)} mm${c.longueur?` · ${esc(String(c.longueur))} ml`:''}</h3>`;
+    }
+    sections+=`<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr>${tRows}</table>`;
   });
+  if(!groups.length) sections='<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr></table>';
+
+  // Meta technique : en mono-réf on garde l'affichage historique ; en multi, mère/utile/lame
+  // sont propres à chaque réf (affichés dans les sous-titres ci-dessus).
+  const metaTech=multi
+    ? `Machine : ${mn} · ${groups.length} références · Date : ${today()}`
+    : `Machine : ${mn} · Bobine mère : ${fmt(mono.mother||parseNum(document.getElementById('motherWidth').value))} mm · Utile : ${fmt(mono.useful||0)} mm · Lame : ${fmt(mono.blade||0)} mm · Date : ${today()}`;
+
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Plan STEP</title>
   <style>body{font-family:Arial,sans-serif;padding:24px;font-size:13px}h2{font-size:18px;margin-bottom:4px}
   .meta{color:#555;font-size:11px;margin-bottom:16px;line-height:1.8}
-  table{border-collapse:collapse;width:100%}th,td{border:1px solid #bbb;padding:7px 11px;text-align:left}
+  table{border-collapse:collapse;width:100%;margin-bottom:6px}th,td{border:1px solid #bbb;padding:7px 11px;text-align:left}
   th{background:#f0f0f0;font-size:11px;text-transform:uppercase}@media print{body{padding:8px}}</style></head><body>
   <h2>Plan de découpe — STEP International</h2>
-  <div class="meta">Client : <b>${client}</b> · Réf : <b>${ref}</b><br>
-  Machine : ${mn} · Bobine mère : ${fmt(mother)} mm · Utile : ${fmt(useful)} mm · Lame : ${fmt(blade)} mm · Date : ${today()}<br>
+  <div class="meta">Client : <b>${client}</b> · Réf : <b>${refLabel}</b><br>
+  ${metaTech}<br>
   Packaging : Palette <b>${palette}</b> · Type <b>${typeCond}</b> · Étiquetage <b>${etiquetage}</b> · Cerclage <b>${cerclage}</b>${notesEmb?'<br><em style="font-size:10px;color:#666">'+notesEmb.replace(/\n/g,' | ')+'</em>':''}</div>
-  <table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr>${tRows}</table></body></html>`;
+  ${sections}</body></html>`;
 }
 function printEtiquette(d){
   const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Étiquette solde</title>
@@ -2851,17 +2902,30 @@ function printEtiquetteSolde(key){
 }
 
 function printOrder(){
-  const rows=getOrderRows(),mn=getMachineLabel(currentMachine);
+  const groups=getRefGroups().filter(g=>g.rows.length);
+  const mn=getMachineLabel(currentMachine);
   const client=document.getElementById('planClient').value||'—';
+  const multi=groups.length>1;
+  const refLabel=multi?groups.map(g=>g.ref||'?').join(' + '):((groups[0]&&groups[0].ref)||document.getElementById('planRef').value||'—');
+  let body='';
+  if(multi){
+    groups.forEach((g,gi)=>{
+      body+=`<h3 style="font-size:14px;margin:16px 0 6px">🎞 ${esc(g.ref||('Référence '+(gi+1)))} — bobine mère ${fmt(g.mother)} mm${g.longueur?` · ${esc(String(g.longueur))} ml`:''}</h3>
+      <table><tr><th>#</th><th>Largeur (mm)</th><th>Quantité</th></tr>
+      ${g.rows.map((r,i)=>`<tr><td>${i+1}</td><td>${r.width}</td><td>${r.qty}</td></tr>`).join('')}</table>`;
+    });
+  }else{
+    const rows=(groups[0]&&groups[0].rows)||getOrderRows();
+    body=`<table><tr><th>#</th><th>Largeur (mm)</th><th>Quantité</th></tr>
+      ${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${r.width}</td><td>${r.qty}</td></tr>`).join('')}</table>`;
+  }
   const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Commande STEP</title>
   <style>body{font-family:Arial,sans-serif;padding:24px;font-size:14px}h2{margin-bottom:6px}
-  .meta{color:#666;font-size:12px;margin-bottom:18px}table{border-collapse:collapse;width:100%;max-width:500px}
+  .meta{color:#666;font-size:12px;margin-bottom:18px}table{border-collapse:collapse;width:100%;max-width:500px;margin-bottom:6px}
   th,td{border:1px solid #999;padding:8px 14px}th{background:#f0f0f0}</style></head><body>
   <h2>Commande — STEP International</h2>
-  <div class="meta">Client : ${client} · Machine : ${mn} · Date : ${today()}</div>
-  <table><tr><th>#</th><th>Largeur (mm)</th><th>Quantité</th></tr>
-  ${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${r.width}</td><td>${r.qty}</td></tr>`).join('')}
-  </table></body></html>`;
+  <div class="meta">Client : ${client} · Réf : ${refLabel} · Machine : ${mn} · Date : ${today()}</div>
+  ${body}</body></html>`;
   openPrintWindow(html);
 }
 function printPlan(){openPrintWindow(getPlanHTML());}
@@ -3193,61 +3257,54 @@ function recalcEcartsFromFiche(){
     alert('⏱ Le chronomètre doit être en marche pour recalculer le plan.');
     return;
   }
-  const rows=getOrderRows();
-  if(!rows.length){alert('Aucune commande à recalculer.');return;}
-  const useful=getUseful(),blade=getBlade();
-  const over=rows.filter(r=>r.width>useful);
+  // Commande RÉF PAR RÉF : chaque référence a sa propre laize utile, sa lame
+  // et ses lignes de découpe. L'optimisation du reliquat se fait isolément
+  // par référence (une réf ne mélange jamais ses laizes avec une autre).
+  const computed=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
+  if(!computed.length){alert('Aucune commande à recalculer.');return;}
+
+  // Garde-fou laize : une largeur ne doit pas dépasser la laize utile de SA réf.
+  const over=[].concat(...computed.map(c=>c.oversize.map(r=>({ref:c.ref,width:r.width,useful:c.useful}))));
   if(over.length){
-    alert(`⛔ Recalcul bloqué.\n\n${over.length} laize(s) dépassent la largeur utile (${fmt(useful)} mm) : ${over.map(r=>fmt(r.width)+' mm').join(', ')}.`);
+    alert(`⛔ Recalcul bloqué.\n\n${over.length} laize(s) dépassent la largeur utile de leur référence : `+
+      over.map(o=>`${fmt(o.width)} mm${o.ref?` (réf ${o.ref})`:''}`).join(', ')+'.');
     return;
   }
 
-  // Commande client (fixe)
-  const command={};
-  rows.forEach(r=>{command[r.width]=(command[r.width]||0)+r.qty;});
+  const multi=computed.length>1;
+  const refKey=c=>(c.ref||'');
 
-  // Production engagée = somme des configs des bobines figées
+  // Commande par réf (cible client, fixe)
+  const cmdByRef={};
+  computed.forEach(c=>{
+    const m={}; c.rows.forEach(r=>{m[r.width]=(m[r.width]||0)+r.qty;});
+    cmdByRef[refKey(c)]={command:m, useful:c.useful, blade:c.blade, longueur:c.longueur, ref:c.ref};
+  });
+
+  // Bobines figées (production engagée) ; on garde l'objet meta pour préserver
+  // ref/laize/lame/origine et l'éventuelle photo lors de la reconstruction.
   const frozenSet=new Set(ficheLines.filter(l=>isLineFrozen(l.id)).map(l=>l.id));
-  const committed={};
-  frozenSet.forEach(id=>{
-    parseConf(document.getElementById('flConf_'+id)?.value||'').forEach(p=>{committed[p.width]=(committed[p.width]||0)+p.qty;});
+
+  // Coupé figé par réf
+  const committedByRef={};
+  ficheLines.forEach(l=>{
+    if(!frozenSet.has(l.id)) return;
+    const k=l.ref||'';
+    const m=committedByRef[k]||(committedByRef[k]={});
+    parseConf(document.getElementById('flConf_'+l.id)?.value||'').forEach(p=>{m[p.width]=(m[p.width]||0)+p.qty;});
   });
 
-  // Résiduel à couper + surplus déjà produit
-  const residual={}, surplus={};
-  new Set([...Object.keys(command),...Object.keys(committed)].map(Number)).forEach(w=>{
-    const c=command[w]||0, k=committed[w]||0;
-    if(c>k) residual[w]=c-k;
-    else if(k>c) surplus[w]=k-c;
+  // Reliquat à recouper + surplus (tracé), calculés réf par réf
+  const residualByRef={}, surplusByRef={};
+  Object.keys(cmdByRef).forEach(k=>{
+    const cmd=cmdByRef[k].command, com=committedByRef[k]||{};
+    const res={}, sur={};
+    new Set([...Object.keys(cmd),...Object.keys(com)].map(Number)).forEach(w=>{
+      const c=cmd[w]||0, kk=com[w]||0;
+      if(c>kk) res[w]=c-kk; else if(kk>c) sur[w]=kk-c;
+    });
+    residualByRef[k]=res; surplusByRef[k]=sur;
   });
-
-  // ====== DIAGNOSTIC TEMPORAIRE (à retirer après analyse) ======
-  // Affiche commande / coupé figé / reliquat + l'état de chaque bobine,
-  // pour comprendre pourquoi le reliquat ne se restitue pas.
-  {
-    const fmtMap=m=>{const e=Object.entries(m).filter(([,q])=>q>0);return e.length?e.map(([w,q])=>q+'×'+w).join(' + '):'(vide)';};
-    const lignes=ficheLines.map((l,i)=>{
-      const fz=isLineFrozen(l.id);
-      const coup=document.getElementById(l.id)?.classList.contains('coupee')?'coupée':'à couper';
-      const cur=(document.getElementById('flConf_'+l.id)?.value||'').replace(/x/gi,'×').trim();
-      const orig=(l.origConf||'').trim();
-      return `  Bob ${i+1} [${fz?'FIGÉE':'libre'} · ${coup}] config="${cur||'(vide)'}"`+(cur!==orig?` (origine "${orig||'(vide)'}")`:'');
-    }).join('\n');
-    alert(
-      '🔎 DIAGNOSTIC RECALCUL\n'+
-      '────────────────────\n'+
-      'Commande (onglet Plan) : '+fmtMap(command)+'\n'+
-      'Coupé figé (committed) : '+fmtMap(committed)+'\n'+
-      'RELIQUAT à recouper    : '+fmtMap(residual)+'\n'+
-      'Surplus (tracé)        : '+fmtMap(surplus)+'\n'+
-      '────────────────────\n'+
-      `Bobines : ${ficheLines.length} total · ${frozenSet.size} figées · ${ficheLines.length-frozenSet.size} libres (supprimées au recalcul)\n`+
-      lignes+'\n'+
-      '────────────────────\n'+
-      'Renvoie cette fenêtre à Este. (OK = le recalcul continue normalement)'
-    );
-  }
-  // ====== FIN DIAGNOSTIC TEMPORAIRE ======
 
   // Retour visuel immédiat : l'opérateur voit que le recalcul est lancé.
   const banner=document.getElementById('coupeeBanner');
@@ -3257,29 +3314,63 @@ function recalcEcartsFromFiche(){
     banner.innerHTML='♻ Recalcul en cours…';
   }
 
-  // L'application réelle (suppression des non-figées + re-pack + affichage) se fait
-  // ~1s plus tard, pour que l'opérateur voie distinctement les bobines du plan changer.
+  // L'application réelle (~1s plus tard) : on conserve les bobines figées de
+  // CHAQUE réf, on régénère uniquement le reliquat de CHAQUE réf, et on
+  // reconstruit la liste réf par réf (séparateurs + bobines dans l'ordre).
   setTimeout(()=>{
-    // Retirer les bobines NON figées (plan pas encore réalisé), pour régénérer un plan optimal
-    ficheLines.filter(l=>!frozenSet.has(l.id)).forEach(l=>{document.getElementById(l.id)?.remove();delete ficholinePhotos[l.id];});
-    ficheLines=ficheLines.filter(l=>frozenSet.has(l.id));
+    const cont=document.getElementById('ficheLines');
 
-    // Re-pack du résiduel → bobines restantes optimisées
-    const items=[];
-    Object.entries(residual).forEach(([w,q])=>{for(let i=0;i<q;i++) items.push(Number(w));});
-    let added=0, wasteReste=0;
-    if(items.length){
-      const bobines=pack(items.sort((a,b)=>b-a),useful,blade);
-      const groups=groupBobines(bobines,blade);
-      let ri=1;
-      groups.forEach(g=>{
-        wasteReste+=(useful-calcStats(g.pattern,blade).total)*g.count;
-        for(let ci=0;ci<g.count;ci++){
-          addFicheLine({label:'RESTE-'+String(ri).padStart(2,'0'),conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + ')});
-          ri++; added++;
-        }
-      });
-    }
+    // 1) Détacher (sans détruire) les bobines figées — on les ré-attachera dans l'ordre.
+    const frozenMetas=ficheLines.filter(l=>frozenSet.has(l.id));
+    const frozenNodes={};
+    frozenMetas.forEach(l=>{const n=document.getElementById(l.id); if(n){ if(n.parentNode) n.parentNode.removeChild(n); frozenNodes[l.id]=n; }});
+
+    // 2) Supprimer définitivement les bobines NON figées (+ leurs photos) et les séparateurs.
+    ficheLines.filter(l=>!frozenSet.has(l.id)).forEach(l=>{document.getElementById(l.id)?.remove();delete ficholinePhotos[l.id];});
+    cont.querySelectorAll('.fiche-ref-sep').forEach(s=>s.remove());
+
+    // 3) Reconstruire réf par réf.
+    ficheLines=[];
+    const recap=[]; let totalAdded=0;
+    computed.forEach((c,ci)=>{
+      const k=refKey(c);
+      if(multi) insertFicheRefSeparator(c.ref||('Référence '+(ci+1)), c.useful, c.longueur);
+
+      // 3a) Ré-attacher les bobines figées de cette réf (ordre d'origine préservé).
+      frozenMetas.filter(l=>(l.ref||'')===k).forEach(l=>{ cont.appendChild(frozenNodes[l.id]); ficheLines.push(l); });
+
+      // 3b) Ré-empaqueter le reliquat de cette réf avec SA laize / SA lame.
+      const items=[];
+      Object.entries(residualByRef[k]||{}).forEach(([w,q])=>{for(let i=0;i<q;i++) items.push(Number(w));});
+      let added=0, waste=0;
+      if(items.length){
+        const bobines=pack(items.sort((a,b)=>b-a),c.useful,c.blade);
+        const groups=groupBobines(bobines,c.blade);
+        let ri=1;
+        groups.forEach(g=>{
+          waste+=(c.useful-calcStats(g.pattern,c.blade).total)*g.count;
+          for(let n=0;n<g.count;n++){
+            addFicheLine({label:(multi&&c.ref?c.ref+' · ':'')+'RESTE-'+String(ri).padStart(2,'0'),
+              conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + '),
+              ref:c.ref||'', useful:c.useful, blade:c.blade});
+            ri++; added++;
+          }
+        });
+      }
+      totalAdded+=added;
+
+      // 3c) Récap de la réf.
+      const sur=surplusByRef[k]||{};
+      let line=(multi?`Réf ${c.ref||('#'+(ci+1))} : `:'')+(added>0
+        ? `${added} bobine(s) à recouper (perte restante ${fmt(Math.round(waste))} mm)`
+        : 'commande couverte');
+      if(Object.keys(sur).length) line+=' · surplus tracé '+Object.entries(sur).map(([w,q])=>`${q}×${w}mm`).join(', ');
+      recap.push(line);
+    });
+
+    // 4) Bobines figées dont la réf n'existe plus dans le plan : conservées en fin de liste.
+    const known=new Set(computed.map(c=>refKey(c)));
+    frozenMetas.filter(l=>!known.has(l.ref||'')).forEach(l=>{ cont.appendChild(frozenNodes[l.id]); ficheLines.push(l); });
 
     recalcPlan();
     updateAllCumuls();
@@ -3288,14 +3379,8 @@ function recalcEcartsFromFiche(){
     renumberFicheLines();
     refreshEtiquetteSolde();
 
-    // Récap
-    let parts=[];
-    if(added>0) parts.push(`→ ${added} bobine(s) restante(s) à couper (ré-optimisées, perte restante ${fmt(Math.round(wasteReste))} mm).`);
-    else parts.push('→ Commande couverte : plus rien à couper.');
-    if(Object.keys(surplus).length){
-      parts.push('⚠ Surplus déjà coupé (tracé, non recoupé) : '+Object.entries(surplus).map(([w,q])=>`${q}×${w}mm`).join(', ')+'.');
-    }
-    alert('♻ Plan ré-optimisé.\n\n'+parts.join('\n\n'));
+    const head=totalAdded>0?'♻ Plan ré-optimisé.':'♻ Recalcul terminé — commande couverte.';
+    alert(head+'\n\n'+recap.join('\n'));
   },1000);
 }
 
@@ -3596,10 +3681,10 @@ function chronoSave(){
   const ref=document.getElementById('fRef').value||document.getElementById('planRef').value||'—';
   const ini=document.getElementById('fInitiales').value||'—';
   const machine=getMachineLabel(ficheMachine);
-  const rows=getOrderRows();
-  const totalLaizes=rows.reduce((s,r)=>s+r.qty,0);
-  const nbBobinesMeres=pack(expandDemand(rows),getUseful(),getBlade()).length;
-  const commandeDetail=rows.map(r=>`${r.qty} × ${r.width} mm`).join(' | ');
+  const agg=getOrderAggregate();                 // multi-réf : bobines packées réf par réf
+  const totalLaizes=agg.totalLaizes;
+  const nbBobinesMeres=agg.nbBobines;
+  const commandeDetail=agg.commandeDetail;
   document.getElementById('chronoSaveInfo').innerHTML=`
     <div style="font-size:22px;font-weight:700;color:var(--green);margin-bottom:10px">⏱ ${fmtTimeFr(chronoSec)}</div>
     <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:13px">
@@ -3622,15 +3707,16 @@ async function doChronoSave(){
   const ini=document.getElementById('fInitiales').value||'—';
   const ini2=document.getElementById('fOp2Active').checked?(document.getElementById('fInitiales2').value||''):'';
   const op2Bob=document.getElementById('fOp2Active').checked?(document.getElementById('fOp2Bobine').value||''):'';
-  const rows=getOrderRows();
-  const totalLaizes=rows.reduce((s,r)=>s+r.qty,0);
-  const nbBobines=pack(expandDemand(rows),getUseful(),getBlade()).length;
+  const agg=getOrderAggregate();                 // multi-réf : toutes les réfs
+  const rows=agg.rows;
+  const totalLaizes=agg.totalLaizes;
+  const nbBobines=agg.nbBobines;
   const entry={
     date:chronoStartTs||isoNow(),dateEnd:isoNow(),duree:chronoSec,
     operateur:ini,operateur2:ini2,op2Bobine:op2Bob,
     machine:getMachineLabel(ficheMachine),client,ref,rows,
     numCmd:document.getElementById('fNumCmd')?.value||document.getElementById('planNumCmd')?.value||'',
-    commandeDetail:rows.map(r=>`${r.qty}×${r.width}mm`).join(' + '),
+    commandeDetail:agg.commandeDetail,
     totalLaizes,nbBobines,
     largeur:document.getElementById('planLargeur').value||'',
     longueur:document.getElementById('planLongueur').value||'',
@@ -5181,11 +5267,14 @@ function toggleAction(id,which){
 function parseConf(val){
   const pieces=[];
   val=val.replace(/x/gi,'×').replace(/\*/g,'×');
+  // Largeur : entier OU décimale à point (ex. 92.5). La quantité reste entière.
+  // (Le séparateur est + ou , : on ne supporte donc pas la virgule décimale ici,
+  //  mais les configs générées par l'appli utilisent toujours le point.)
   val.split(/[+,]/).forEach(p=>{
     p=p.trim();
-    const m=p.match(/(\d+)\s*×\s*(\d+)/);
-    if(m) pieces.push({qty:parseInt(m[1]),width:parseInt(m[2])});
-    else{const m2=p.match(/^(\d+)(?:mm)?$/);if(m2) pieces.push({qty:1,width:parseInt(m2[1])});}
+    const m=p.match(/(\d+)\s*×\s*(\d+(?:\.\d+)?)/);
+    if(m) pieces.push({qty:parseInt(m[1]),width:parseFloat(m[2])});
+    else{const m2=p.match(/^(\d+(?:\.\d+)?)(?:mm)?$/);if(m2) pieces.push({qty:1,width:parseFloat(m2[1])});}
   });
   return pieces;
 }
