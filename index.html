@@ -4980,10 +4980,16 @@ function addFicheLine(data){
   renumberFicheLines();
 }
 function renumberFicheLines(){
-  const total=ficheLines.length;
-  ficheLines.forEach((l,i)=>{
+  // Numérotation RELATIVE à la référence : la 3e bobine de KX1045-1 (qui en a 3) = 3/3,
+  // pas 3/6. En mono-réf, le total de la réf = total global (comportement inchangé).
+  const totalsByRef={};
+  ficheLines.forEach(l=>{const k=l.ref||'__';totalsByRef[k]=(totalsByRef[k]||0)+1;});
+  const seenByRef={};
+  ficheLines.forEach(l=>{
+    const k=l.ref||'__';
+    seenByRef[k]=(seenByRef[k]||0)+1;
     const el=document.getElementById('pos_'+l.id);
-    if(el) el.textContent=(i+1)+'/'+total;
+    if(el) el.textContent=seenByRef[k]+'/'+totalsByRef[k];
   });
 }
 function removeFicheLine(id){
