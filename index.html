@@ -2019,7 +2019,7 @@ function importPlanToFiche(opts){
     // Génération des bobines, réf par réf, avec séparateur visuel entre réfs.
     let bi=1;
     computed.forEach((c,ci)=>{
-      if(multi) insertFicheRefSeparator(c.ref||('Référence '+(ci+1)), c.useful);
+      if(multi) insertFicheRefSeparator(c.ref||('Référence '+(ci+1)), c.useful, c.longueur);
       c.planGroups.forEach(g=>{
         for(let k=0;k<g.count;k++){
           const lbl=(multi&&c.ref?c.ref+' · ':'')+'BOB-'+String(bi).padStart(3,'0');
@@ -2042,10 +2042,11 @@ function importPlanToFiche(opts){
   }
 }
 // Insère une bande de séparation de référence dans la liste des bobines de la fiche.
-function insertFicheRefSeparator(ref,useful){
+function insertFicheRefSeparator(ref,useful,longueur){
   const div=document.createElement('div');
   div.className='fiche-ref-sep';
-  div.innerHTML=`🎞 ${esc(ref)} — laize ${fmt(useful)} mm`;
+  const mlPart=(longueur!=null&&String(longueur).trim()!=='')?` · ${esc(String(longueur))} ml`:'';
+  div.innerHTML=`🎞 ${esc(ref)} — laize ${fmt(useful)} mm${mlPart}`;
   document.getElementById('ficheLines').appendChild(div);
 }
 
@@ -3057,9 +3058,13 @@ function buildPlanName(){
 function computeEcarts(rows){
   const commanded={};
   rows.forEach(r=>{commanded[r.width]=(commanded[r.width]||0)+r.qty;});
-  // Réellement coupé = somme des configs de toutes les lignes fiche
+  // Réellement coupé = somme des configs des bobines effectivement COUPÉES.
+  // (Une bobine non cochée "coupée" n'a rien produit : la compter fausserait
+  //  l'écart et pouvait déclencher des rattrapages fantômes après un recalcul.)
   const real={};
   ficheLines.forEach(({id})=>{
+    const line=document.getElementById(id);
+    if(!line||!line.classList.contains('coupee')) return; // seules les coupées comptent
     const confEl=document.getElementById('flConf_'+id);
     if(!confEl) return;
     parseConf(confEl.value).forEach(p=>{real[p.width]=(real[p.width]||0)+p.qty;});
@@ -3068,8 +3073,8 @@ function computeEcarts(rows){
   const deficit={}, surplus={};
   widths.forEach(w=>{
     const c=commanded[w]||0, r=real[w]||0;
-    if(r<c) deficit[w]=c-r;       // il manque des bobinots
-    else if(r>c) surplus[w]=r-c;  // il y en a en trop
+    if(r<c) deficit[w]=c-r;       // largeur réellement non couverte par ce qui est coupé
+    else if(r>c) surplus[w]=r-c;  // coupé en trop (tracé, jamais recoupé)
   });
   return {commanded,real,deficit,surplus};
 }
