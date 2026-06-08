@@ -3470,9 +3470,32 @@ async function saveCommandeFiche(rows,useful,blade,opts){
   const ficheData=getFicheLinesData();
   const planName=buildPlanName();
   const ficheDetailTagged=ficheData.map((fd,i)=>({...fd,horsPlan:(i+1)>nbPlan}));
-  // Groupes pour l'historique : chaque groupe garde la laize de sa réf
+  // Groupes pour le PDF / l'historique : reflètent l'ÉTAT RÉEL des bobines de
+  // la fiche (configs après recalcul/modif), pas le re-pack théorique de la
+  // commande. Chaque bobine est lue depuis sa config réelle, avec sa propre
+  // laize utile/lame ; les bobines consécutives identiques sont regroupées.
+  // Repli sur le plan théorique (groups/computed) si aucune ligne de fiche.
   let groupsForRecord;
-  if(multi){
+  const buildGroupsFromFiche=()=>{
+    const out=[];
+    ficheData.forEach(fd=>{
+      const pat=parseConf(fd.conf||'');
+      const u=fd.useful||useful||0;
+      const b=(fd.blade!=null?fd.blade:blade)||0;
+      const tot=pat.length?calcStats(pat,b).total:0;
+      const label=(multi&&fd.ref?fd.ref+' · ':'')+(pat.length?makeLabel(pat):(fd.conf||'—'));
+      const last=out[out.length-1];
+      if(last&&last.label===label&&last.total===fmt(tot)&&last.waste===fmt(u-tot)){
+        last.count++;
+      }else{
+        out.push({label,count:1,total:fmt(tot),waste:fmt(u-tot),isLast:false});
+      }
+    });
+    return out;
+  };
+  if(ficheData.length){
+    groupsForRecord=buildGroupsFromFiche();
+  }else if(multi){
     groupsForRecord=[];
     computed.forEach(c=>{
       c.planGroups.forEach(gp=>{
