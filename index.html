@@ -854,6 +854,15 @@ window.addEventListener('error',function(e){
 window.addEventListener('unhandledrejection',function(e){
   console.error('Promesse rejetée :',e.reason);
 });
+// Protection contre la fermeture/rechargement accidentel pendant une commande.
+// Tant que le chrono tourne, une fiche est en cours : on avertit avant de quitter.
+window.addEventListener('beforeunload',function(e){
+  if(typeof chronoRunning!=='undefined' && chronoRunning){
+    e.preventDefault();
+    e.returnValue='';
+    return '';
+  }
+});
 
 var BACKFILL_FLAG='step_deleted_backfilled';
 async function loadFirestoreData(){
@@ -2554,6 +2563,21 @@ function recalcPlan(){
   if(document.getElementById('usefulDisplay'))
     document.getElementById('usefulDisplay').textContent='Largeur utile : '+fmt(getUseful())+' mm';
   const groups=getRefGroups();
+  // Garde-fou anti-freeze : l'optimisation devient coûteuse quand une réf cumule
+  // beaucoup de largeurs DISTINCTES et une grosse quantité (calcul ~quadratique).
+  // Plutôt que de geler le poste atelier, on prévient et on stoppe le calcul.
+  const heavy=groups.find(g=>{
+    const widths=new Set(g.rows.filter(r=>r.qty>0&&r.width>0).map(r=>r.width));
+    const qty=g.rows.reduce((s,r)=>s+(r.qty>0?r.qty:0),0);
+    return widths.size>=40 && qty>=400;
+  });
+  if(heavy){
+    const cardsEl=document.getElementById('planCards');
+    const statsEl=document.getElementById('statsBar');
+    if(statsEl) statsEl.innerHTML='';
+    if(cardsEl) cardsEl.innerHTML='<div style="background:#3d1414;border:2px solid var(--red);color:#fca5a5;border-radius:10px;padding:14px;font-size:13px;font-weight:700">⛔ Commande trop complexe pour l\'optimisation automatique (beaucoup de laizes distinctes + grosse quantité). Découpe-la en plusieurs plans plus simples, ou vérifie une éventuelle faute de saisie.</div>';
+    return;
+  }
   const computed=packRefGroups(groups);
   // planGroups global = concat des configs de toutes les réfs (pour le reste de l'app)
   planGroups=[].concat(...computed.map(c=>c.planGroups));
