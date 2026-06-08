@@ -312,8 +312,8 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
         <input type="date" id="planDateLiv">
       </div>
       <div class="field">
-        <label>📷 Photo de la commande client</label>
-        <div id="commandePhotoZone" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><button class="photo-btn" onclick="triggerPhoto('__commande__')">📷 Ajouter photo</button></div>
+        <label>📎 Fichiers commande client</label>
+        <div id="commandePhotoZone" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><button class="photo-btn" onclick="triggerCommandeFiles()">📎 Ajouter fichier</button></div>
       </div>
     </div>
   </div>
@@ -335,6 +335,28 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
         <div class="field">
           <label>Longueur (m) <span style="color:var(--green);font-size:11px">auto</span></label>
           <input type="text" id="planLongueur" data-rb="longueur" placeholder="600" inputmode="decimal">
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>Type de film</label>
+          <select data-rb="film" onchange="recalcPlan()">
+            <option value="">— Aucun —</option>
+            <option value="Imprimé">Imprimé</option>
+            <option value="Non imprimé">Non imprimé</option>
+            <option value="Vert">Vert</option>
+            <option value="Bleu">Bleu</option>
+            <option value="Transparent">Transparent</option>
+            <option value="Micro perf">Micro perf</option>
+          </select>
+        </div>
+        <div class="field" data-rb="vekafield" style="display:none">
+          <label>VEKA</label>
+          <select data-rb="veka" onchange="recalcPlan()">
+            <option value="">— Choisir —</option>
+            <option value="Profilé">Profilé</option>
+            <option value="VEKA">VEKA</option>
+          </select>
         </div>
       </div>
       <div class="row3">
@@ -527,6 +549,18 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
           <option value="">— Choisir une bobine —</option>
         </select>
         <div class="text-muted" style="font-size:11px;margin-top:6px">La liste se remplit automatiquement depuis le plan.</div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:12px">
+          <input type="checkbox" id="fOp2DiffMachine" onchange="toggleOp2Machine()" style="width:18px;height:18px;flex:0 0 auto;accent-color:var(--orange)">
+          <span style="font-size:13px;color:var(--text)">A coupé sur une autre machine</span>
+        </label>
+        <div id="op2MachineZone" class="hidden" style="margin-top:8px">
+          <label>Machine de l'opérateur 2</label>
+          <div class="machine-btns" style="margin-bottom:0">
+            <button type="button" class="machine-btn-fiche sel-feba" id="fBtnFeba2" onclick="selectFicheMachine2('feba')">FEBA</button>
+            <button type="button" class="machine-btn-fiche" id="fBtnMaveg2" onclick="selectFicheMachine2('maveg')">MAVEG</button>
+            <button type="button" class="machine-btn-fiche" id="fBtnCevenini2" onclick="selectFicheMachine2('cevenini')">CEVENINI</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -764,6 +798,8 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
 <!-- input fichier caché pour les photos -->
 <input type="file" id="photoFileInput" accept="image/*" capture="environment" style="display:none">
 <input type="file" id="blFileInput" accept="image/*,application/pdf" style="display:none">
+<input type="file" id="commandeFilesInput" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.odt,.ods,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple style="display:none">
+
 
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
@@ -1610,6 +1646,7 @@ function csvCell(v){
 // ============================================================
 let currentMachine = 'feba';
 let ficheMachine = 'feba';
+let ficheMachine2 = ''; // machine de l'opérateur 2 (si différente)
 let selectedIni = '';
 let selectedIni2 = '';
 let planGroups = [];
@@ -1622,7 +1659,8 @@ let loadTargetIdx = null;
 let loadedSaveId = null; // id du plan sauvegardé chargé par l'opérateur (supprimé après confirmation de la fiche)
 let photoTargetId = null; // pour savoir quelle bobine reçoit la photo
 let ficholinePhotos = {}; // id -> Storage URL (ou ancien base64)
-let commandePhoto = ''; // photo de la commande client (niveau plan) -> Storage URL (ou base64)
+let commandePhoto = ''; // [LEGACY] ancienne photo unique de commande (rétro-compat)
+let commandeFiles = []; // fichiers commande client : [{url,type,name}] type ∈ image|pdf|doc|xls|file
 
 // CHRONO
 let chronoSec = 0;
@@ -1910,27 +1948,106 @@ function blCardBlock(f){
   return `<div style="margin:6px 0;padding:8px 10px;border-radius:8px;background:${complete?'rgba(74,222,128,0.08)':'rgba(248,113,113,0.08)'};border:1px solid ${complete?'#1e5c30':'#7a2222'}">${head}${body}${actions}</div>`;
 }
 
-// Photo de la commande client (niveau plan) — réutilise la plomberie des photos de ligne
+// Fichiers de la commande client (niveau plan) — multi-fichiers, tous types
+// (images, PDF, Word, Excel…). Modèle : commandeFiles = [{url,type,name}].
+// Rétro-compat : un ancien commandePhoto (string) est migré en 1er fichier image.
+function migrateCommandePhoto(){
+  if(commandePhoto && !commandeFiles.some(f=>f.url===commandePhoto)){
+    commandeFiles.unshift({url:commandePhoto,type:'image',name:'Photo commande'});
+  }
+  commandePhoto='';
+}
+// Normalise les fichiers commande depuis un enregistrement (save/fiche/brouillon) :
+// gère le nouveau tableau commandeFiles ET l'ancien champ commandePhoto (string).
+function readCommandeFiles(rec){
+  if(!rec) return [];
+  if(Array.isArray(rec.commandeFiles)) return rec.commandeFiles.slice();
+  if(rec.commandePhoto) return [{url:rec.commandePhoto,type:'image',name:'Photo commande'}];
+  return [];
+}
+function fileKind(file){
+  const n=(file&&file.name||'').toLowerCase();
+  const t=(file&&file.type||'').toLowerCase();
+  if(t.startsWith('image/')) return 'image';
+  if(t==='application/pdf'||/\.pdf$/.test(n)) return 'pdf';
+  if(/\.(docx?|odt)$/.test(n)||t.includes('word')||t.includes('opendocument.text')) return 'doc';
+  if(/\.(xlsx?|csv|ods)$/.test(n)||t.includes('excel')||t.includes('spreadsheet')) return 'xls';
+  return 'file';
+}
+function fileIcon(type){
+  return type==='image'?'🖼':type==='pdf'?'📄':type==='doc'?'📝':type==='xls'?'📊':'📎';
+}
+function triggerCommandeFiles(){
+  const input=document.getElementById('commandeFilesInput');
+  if(!input) return;
+  input.value='';
+  input.click();
+}
+document.getElementById('commandeFilesInput').addEventListener('change',async function(){
+  const files=Array.from(this.files||[]);
+  if(!files.length) return;
+  const zone=document.getElementById('commandePhotoZone');
+  if(zone) zone.insertAdjacentHTML('afterbegin','<span id="cmdUploadingMsg" style="color:var(--muted);font-size:13px;width:100%">⏳ Upload en cours…</span>');
+  for(const file of files){
+    const kind=fileKind(file);
+    try{
+      let url, name=file.name||('fichier.'+kind);
+      if(kind==='image'){
+        const blob=storage?await compressImageBlob(file,1400,0.7):null;
+        url=storage?await uploadCommandeFile(blob,'jpg','image/jpeg'):await compressImage(file,1400,0.7);
+      }else{
+        const ext=(name.split('.').pop()||'bin').toLowerCase();
+        url=storage?await uploadCommandeFile(file,ext,file.type||'application/octet-stream'):await fileToBase64(file);
+      }
+      commandeFiles.push({url,type:kind,name});
+    }catch(e){ alert('Erreur fichier « '+(file.name||'')+' » : '+e.message); }
+  }
+  refreshCommandePhotoZone();
+});
+async function uploadCommandeFile(blob,ext,contentType){
+  const ts=Date.now();
+  const path='commande/CMD_'+ts+'_'+Math.floor(Math.random()*9999)+'.'+ext;
+  const ref=storage.ref(path);
+  await ref.put(blob,{contentType});
+  return await ref.getDownloadURL();
+}
 function refreshCommandePhotoZone(){
+  migrateCommandePhoto();
   const zone=document.getElementById('commandePhotoZone');
   if(!zone) return;
-  if(commandePhoto){
-    zone.innerHTML=`<img src="${commandePhoto}" class="photo-thumb" onclick="openCommandePhotoViewer()" alt="commande">
-      <button class="photo-btn" onclick="triggerPhoto('__commande__')">🔄 Changer</button>
-      <button class="photo-btn" onclick="deleteCommandePhoto()" style="border-color:#7a2222;color:var(--red)">🗑</button>`;
-  } else {
-    zone.innerHTML=`<button class="photo-btn" onclick="triggerPhoto('__commande__')">📷 Ajouter photo</button>`;
-  }
+  let html='';
+  commandeFiles.forEach((f,i)=>{
+    if(f.type==='image'){
+      html+=`<div style="position:relative;display:inline-block">
+        <img src="${f.url}" class="photo-thumb" onclick="openCommandeFileViewer(${i})" alt="${esc(f.name||'image')}" title="${esc(f.name||'')}">
+        <button onclick="deleteCommandeFile(${i})" style="position:absolute;top:-6px;right:-6px;background:#7a2222;color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:12px;cursor:pointer;line-height:1">✕</button>
+      </div>`;
+    }else{
+      html+=`<div style="display:inline-flex;align-items:center;gap:6px;background:var(--card);border:1px solid var(--border2);border-radius:8px;padding:6px 10px;font-size:12px">
+        <a href="${f.url}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none;font-weight:600">${fileIcon(f.type)} ${esc(f.name||'fichier')}</a>
+        <button onclick="deleteCommandeFile(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:13px">🗑</button>
+      </div>`;
+    }
+  });
+  html+=`<button class="photo-btn" onclick="triggerCommandeFiles()">📎 Ajouter fichier</button>`;
+  zone.innerHTML=html;
 }
-async function deleteCommandePhoto(){
-  if(commandePhoto) await deletePhotoFromStorage(commandePhoto);
-  commandePhoto='';
+async function deleteCommandeFile(i){
+  const f=commandeFiles[i];
+  if(!f) return;
+  if(f.url) await deletePhotoFromStorage(f.url);
+  commandeFiles.splice(i,1);
   refreshCommandePhotoZone();
 }
-function openCommandePhotoViewer(){
-  if(!commandePhoto) return;
-  document.getElementById('photoOverlayImg').src=commandePhoto;
-  document.getElementById('photoOverlay').classList.add('open');
+function openCommandeFileViewer(i){
+  const f=commandeFiles[i];
+  if(!f) return;
+  if(f.type==='image'){
+    document.getElementById('photoOverlayImg').src=f.url;
+    document.getElementById('photoOverlay').classList.add('open');
+  }else{
+    window.open(f.url,'_blank','noopener');
+  }
 }
 
 // ============================================================
@@ -2115,6 +2232,16 @@ function initClientDropdown(){
     Object.keys(CLIENT_DATA).sort().map(c=>`<option value="${c}">${c}</option>`).join('');
 }
 
+// Affiche le menu "VEKA" (Profilé / VEKA) uniquement pour le client VEKA.
+function updateVekaVisibility(){
+  const client=(document.getElementById('planClient')?.value||'').toUpperCase();
+  const show=client==='VEKA';
+  document.querySelectorAll('.ref-block [data-rb="vekafield"]').forEach(el=>{
+    el.style.display=show?'':'none';
+    if(!show){const sel=el.querySelector('[data-rb="veka"]'); if(sel) sel.value='';}
+  });
+}
+
 function onClientChange(){
   const client=document.getElementById('planClient').value;
   const refs=CLIENT_DATA[client]||[];
@@ -2128,6 +2255,7 @@ function onClientChange(){
   });
   const lg=document.getElementById('planLongueur'); if(lg) lg.value='';
   const lr=document.getElementById('planLargeur'); if(lr) lr.value='';
+  updateVekaVisibility();
   if(client) applyPackagingRules(client);
   recalcPlan();
 }
@@ -2221,6 +2349,28 @@ function addRefBlock(){
         <input type="text" data-rb="longueur" placeholder="600" inputmode="decimal">
       </div>
     </div>
+    <div class="row2">
+      <div class="field">
+        <label>Type de film</label>
+        <select data-rb="film" onchange="recalcPlan()">
+          <option value="">— Aucun —</option>
+          <option value="Imprimé">Imprimé</option>
+          <option value="Non imprimé">Non imprimé</option>
+          <option value="Vert">Vert</option>
+          <option value="Bleu">Bleu</option>
+          <option value="Transparent">Transparent</option>
+          <option value="Micro perf">Micro perf</option>
+        </select>
+      </div>
+      <div class="field" data-rb="vekafield" style="display:none">
+        <label>VEKA</label>
+        <select data-rb="veka" onchange="recalcPlan()">
+          <option value="">— Choisir —</option>
+          <option value="Profilé">Profilé</option>
+          <option value="VEKA">VEKA</option>
+        </select>
+      </div>
+    </div>
     <div class="row3">
       <div class="field">
         <label>Bobine mère (mm)</label>
@@ -2246,6 +2396,7 @@ function addRefBlock(){
   const cont=block.querySelector('.rb-rows');
   cont.appendChild(makeOrderRow());cont.appendChild(makeOrderRow());
   updateCartonVisibility();
+  updateVekaVisibility();
   renumberRefBlocks();
   recalcPlan();
 }
@@ -2480,6 +2631,8 @@ function getRefGroups(){
     blocks.forEach(bl=>{
       const ref=(bl.querySelector('[data-rb="ref"]')?.value||'').trim();
       const longueur=bl.querySelector('[data-rb="longueur"]')?.value||'';
+      const film=bl.querySelector('[data-rb="film"]')?.value||'';
+      const veka=bl.querySelector('[data-rb="veka"]')?.value||'';
       const mother=parseNum(bl.querySelector('[data-rb="mother"]')?.value);
       const edge=parseNum(bl.querySelector('[data-rb="edge"]')?.value);
       const blade=parseNum(bl.querySelector('[data-rb="blade"]')?.value);
@@ -2492,7 +2645,7 @@ function getRefGroups(){
         const carton=cEl?Math.floor(parseNum(cEl.value)):0;
         if(qty>0&&w>0){const o={qty,width:w};if(carton>0)o.carton=carton;rows.push(o);}
       });
-      groups.push({ref,longueur,mother,edge,useful,blade,rows});
+      groups.push({ref,longueur,film,veka,mother,edge,useful,blade,rows});
     });
     return groups;
   }
@@ -2500,6 +2653,8 @@ function getRefGroups(){
   return [{
     ref:(document.getElementById('planRef')?.value||'').trim(),
     longueur:document.getElementById('planLongueur')?.value||'',
+    film:document.querySelector('.ref-block [data-rb="film"]')?.value||'',
+    veka:document.querySelector('.ref-block [data-rb="veka"]')?.value||'',
     mother:parseNum(document.getElementById('motherWidth')?.value),
     edge:parseNum(document.getElementById('edgeLoss')?.value),
     useful:getUseful(),
@@ -2511,8 +2666,13 @@ function getRefGroups(){
 // Sérialise les blocs réf pour la sauvegarde (structure persistée).
 function serializeRefGroups(){
   return getRefGroups().map(g=>({
-    ref:g.ref, longueur:g.longueur, mother:g.mother, edge:g.edge, blade:g.blade, rows:g.rows
+    ref:g.ref, longueur:g.longueur, film:g.film||'', veka:g.veka||'', mother:g.mother, edge:g.edge, blade:g.blade, rows:g.rows
   }));
+}
+// Chaîne lisible des attributs film d'une réf (ex. "Imprimé · VEKA"). Vide si rien.
+function filmAttrStr(g){
+  if(!g) return '';
+  return [g.film,g.veka].map(x=>(x||'').trim()).filter(Boolean).join(' · ');
 }
 // Applique une réf sauvegardée à un <select> de réf, en tolérant que le
 // catalogue client ait changé (ex. KX1035 -> KX1045 sous le même code article).
@@ -2550,6 +2710,7 @@ function restoreRefGroups(arr){
   const setRb=(sel,v)=>{const el=document.querySelector('.ref-block [data-rb="'+sel+'"]');if(el)el.value=v==null?'':v;};
   setRb('mother',g0.mother); setRb('edge',g0.edge); setRb('blade',g0.blade);
   setRb('longueur',g0.longueur);
+  setRb('film',g0.film); setRb('veka',g0.veka);
   const refSel=document.querySelector('.ref-block [data-rb="ref"]'); applySavedRef(refSel,g0.ref,client);
   const cont0=document.querySelector('.ref-block .rb-rows');
   (g0.rows||[]).forEach(r=>cont0.appendChild(makeOrderRow(r.qty,r.width,r.carton||'')));
@@ -2560,12 +2721,14 @@ function restoreRefGroups(arr){
     const gi=arr[i];
     const set=(sel,v)=>{const el=bl.querySelector('[data-rb="'+sel+'"]');if(el)el.value=v==null?'':v;};
     set('mother',gi.mother); set('edge',gi.edge); set('blade',gi.blade); set('longueur',gi.longueur);
+    set('film',gi.film); set('veka',gi.veka);
     const rs=bl.querySelector('[data-rb="ref"]'); applySavedRef(rs,gi.ref,client);
     const cont=bl.querySelector('.rb-rows');
     cont.querySelectorAll('.order-row').forEach(r=>r.remove()); // addRefBlock met 2 lignes vides
     (gi.rows||[]).forEach(r=>cont.appendChild(makeOrderRow(r.qty,r.width,r.carton||'')));
   }
   updateCartonVisibility();
+  updateVekaVisibility();
 }
 
 // Packe chaque ref-group indépendamment avec sa propre laize utile.
@@ -2698,7 +2861,8 @@ function recalcPlan(){
     if(multi){
       const refLbl=c.ref||('Référence '+(ci+1));
       const mlPart=(c.longueur!=null&&String(c.longueur).trim()!=='')?` · ${esc(String(c.longueur))} ml`:'';
-      html+=`<div class="ref-band">🎞 ${refLbl} — laize ${fmt(useful)} mm${mlPart} · ${c.stats.totalBobines} bobine${c.stats.totalBobines>1?'s':''} · perte ${c.stats.pct.toFixed(1)}%</div>`;
+      const attr=filmAttrStr(c); const attrPart=attr?` · ${esc(attr)}`:'';
+      html+=`<div class="ref-band">🎞 ${refLbl} — laize ${fmt(useful)} mm${mlPart}${attrPart} · ${c.stats.totalBobines} bobine${c.stats.totalBobines>1?'s':''} · perte ${c.stats.pct.toFixed(1)}%</div>`;
     }
     c.planGroups.forEach((g,gi)=>{
       const st=calcStats(g.pattern,blade);
@@ -2755,10 +2919,26 @@ function resetPlan(){
 // ============================================================
 // PRINT / DOWNLOAD
 // ============================================================
-function openPrintWindow(html){
-  const w=window.open('','_blank');
-  if(w){w.document.open();w.document.write(html);w.document.close();setTimeout(()=>w.print(),400);}
-  else{const b=new Blob([html],{type:'text/html'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='impression_STEP.html';a.click();}
+function openPrintWindow(html,autoPrint){
+  // Blob URL plutôt que document.write : le contenu (souvent lourd, photos
+  // base64) est chargé nativement par le navigateur sans bloquer/figer
+  // l'onglet parent. L'URL est révoquée après chargement pour libérer la RAM.
+  try{
+    const blob=new Blob([html],{type:'text/html'});
+    const url=URL.createObjectURL(blob);
+    const w=window.open(url,'_blank');
+    if(w){
+      if(autoPrint!==false){ w.addEventListener?.('load',()=>{try{w.print();}catch(e){}},{once:true}); setTimeout(()=>{try{w.print();}catch(e){}},800); }
+      setTimeout(()=>{try{URL.revokeObjectURL(url);}catch(e){}},60000);
+      return;
+    }
+    // Pop-up bloqué : repli téléchargement
+    const a=document.createElement('a');a.href=url;a.download='impression_STEP.html';a.click();
+    setTimeout(()=>{try{URL.revokeObjectURL(url);}catch(e){}},60000);
+  }catch(e){
+    const w=window.open('','_blank');
+    if(w){w.document.open();w.document.write(html);w.document.close();if(autoPrint!==false)setTimeout(()=>{try{w.print();}catch(e){}},400);}
+  }
 }
 function getPlanHTML(){
   const groups=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
@@ -2788,17 +2968,17 @@ function getPlanHTML(){
         <td>${isLast?'Solde '+fmt(waste)+' mm':fmt(waste)+' mm'}</td></tr>`;
     });
     if(multi){
-      sections+=`<h3 style="font-size:14px;margin:18px 0 6px;color:#5b21b6">🎞 ${esc(c.ref||('Référence '+(ci+1)))} — bobine mère ${fmt(c.mother)} mm · utile ${fmt(useful)} mm · lame ${fmt(blade)} mm${c.longueur?` · ${esc(String(c.longueur))} ml`:''}</h3>`;
+      const attr=filmAttrStr(c); const attrPart=attr?` · <b>${esc(attr)}</b>`:'';
+      sections+=`<h3 style="font-size:14px;margin:18px 0 6px;color:#5b21b6">🎞 ${esc(c.ref||('Référence '+(ci+1)))} — bobine mère ${fmt(c.mother)} mm · utile ${fmt(useful)} mm · lame ${fmt(blade)} mm${c.longueur?` · ${esc(String(c.longueur))} ml`:''}${attrPart}</h3>`;
     }
     sections+=`<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr>${tRows}</table>`;
   });
   if(!groups.length) sections='<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr></table>';
 
-  // Meta technique : en mono-réf on garde l'affichage historique ; en multi, mère/utile/lame
-  // sont propres à chaque réf (affichés dans les sous-titres ci-dessus).
   const metaTech=multi
     ? `Machine : ${mn} · ${groups.length} références · Date : ${today()}`
     : `Machine : ${mn} · Bobine mère : ${fmt(mono.mother||parseNum(document.getElementById('motherWidth').value))} mm · Utile : ${fmt(mono.useful||0)} mm · Lame : ${fmt(mono.blade||0)} mm · Date : ${today()}`;
+  const monoAttr=multi?'':filmAttrStr(mono);
 
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Plan STEP</title>
   <style>body{font-family:Arial,sans-serif;padding:24px;font-size:13px}h2{font-size:18px;margin-bottom:4px}
@@ -2806,10 +2986,69 @@ function getPlanHTML(){
   table{border-collapse:collapse;width:100%;margin-bottom:6px}th,td{border:1px solid #bbb;padding:7px 11px;text-align:left}
   th{background:#f0f0f0;font-size:11px;text-transform:uppercase}@media print{body{padding:8px}}</style></head><body>
   <h2>Plan de découpe — STEP International</h2>
-  <div class="meta">Client : <b>${client}</b> · Réf : <b>${refLabel}</b><br>
+  <div class="meta">Client : <b>${client}</b> · Réf : <b>${refLabel}</b>${monoAttr?` · Film : <b>${esc(monoAttr)}</b>`:''}<br>
   ${metaTech}<br>
   Packaging : Palette <b>${palette}</b> · Type <b>${typeCond}</b> · Étiquetage <b>${etiquetage}</b> · Cerclage <b>${cerclage}</b>${notesEmb?'<br><em style="font-size:10px;color:#666">'+notesEmb.replace(/\n/g,' | ')+'</em>':''}</div>
   ${sections}</body></html>`;
+}
+// Imprime un plan SAUVEGARDÉ (Données > Plans) sans le charger dans l'éditeur.
+// Reconstruit le HTML depuis l'objet save (refGroups), comme getPlanHTML mais
+// sur des données figées, donc sans toucher au plan en cours.
+function printSavedPlan(id){
+  const s=savesCache.find(x=>x._id===id);
+  if(!s){alert('Plan introuvable.');return;}
+  const arr=(Array.isArray(s.refGroups)&&s.refGroups.length)
+    ? s.refGroups
+    : [{ref:s.ref,longueur:s.longueur,mother:parseNum(s.mother),edge:parseNum(s.edgeLoss),blade:parseNum(s.blade),rows:s.rows||[]}];
+  const grpInput=arr.map(g=>{
+    const mother=parseNum(g.mother), edge=parseNum(g.edge!=null?g.edge:s.edgeLoss);
+    return {ref:g.ref||'', longueur:g.longueur||'', film:g.film||'', veka:g.veka||'', mother, edge, useful:Math.max(0,mother-edge), blade:parseNum(g.blade!=null?g.blade:s.blade), rows:g.rows||[]};
+  });
+  const groups=packRefGroups(grpInput).filter(c=>c.rows.length);
+  const mn=getMachineLabel(s.machine||currentMachine);
+  const client=s.client||'—';
+  const typeCond=s.typeCond||s.carton||'—', palette=s.palette||'—';
+  const etiquetage=s.etiquetage||s.etiquette||'—', cerclage=s.cerclage||'—';
+  const notesEmb=s.notesEmballage||'';
+  const multi=groups.length>1;
+  const mono=groups[0]||{};
+  const refLabel=multi?groups.map(c=>c.ref||'?').join(' + '):(mono.ref||s.ref||'—');
+  let sections='';
+  groups.forEach((c,ci)=>{
+    const useful=c.useful, blade=c.blade;
+    let tRows='';
+    c.planGroups.forEach((g,gi)=>{
+      const st=calcStats(g.pattern,blade),waste=useful-st.total,isLast=gi===c.planGroups.length-1;
+      tRows+=`<tr style="${isLast?'background:#fffbea;font-style:italic':''}">
+        <td>${g.count>1?g.count+' bobines':'1 bobine'}</td>
+        <td><strong>${makeLabel(g.pattern)}</strong></td>
+        <td>${st.laizes}</td>
+        <td>${fmt(st.total)} / ${fmt(useful)}</td>
+        <td>${isLast?'Solde '+fmt(waste)+' mm':fmt(waste)+' mm'}</td></tr>`;
+    });
+    if(multi){
+      const attr=filmAttrStr(c); const attrPart=attr?` · <b>${esc(attr)}</b>`:'';
+      sections+=`<h3 style="font-size:14px;margin:18px 0 6px;color:#5b21b6">🎞 ${esc(c.ref||('Référence '+(ci+1)))} — bobine mère ${fmt(c.mother)} mm · utile ${fmt(useful)} mm · lame ${fmt(blade)} mm${c.longueur?` · ${esc(String(c.longueur))} ml`:''}${attrPart}</h3>`;
+    }
+    sections+=`<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr>${tRows}</table>`;
+  });
+  if(!groups.length) sections='<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr></table>';
+  const metaTech=multi
+    ? `Machine : ${mn} · ${groups.length} références · Date : ${today()}`
+    : `Machine : ${mn} · Bobine mère : ${fmt(mono.mother||parseNum(s.mother))} mm · Utile : ${fmt(mono.useful||0)} mm · Lame : ${fmt(mono.blade||0)} mm · Date : ${today()}`;
+  const monoAttr=multi?'':filmAttrStr(mono);
+  const cmdInfo=(s.numCmd&&s.numCmd!=='—')?` · N° Cmd : <b>${esc(s.numCmd)}</b>`:'';
+  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Plan STEP</title>
+  <style>body{font-family:Arial,sans-serif;padding:24px;font-size:13px}h2{font-size:18px;margin-bottom:4px}
+  .meta{color:#555;font-size:11px;margin-bottom:16px;line-height:1.8}
+  table{border-collapse:collapse;width:100%;margin-bottom:6px}th,td{border:1px solid #bbb;padding:7px 11px;text-align:left}
+  th{background:#f0f0f0;font-size:11px;text-transform:uppercase}@media print{body{padding:8px}}</style></head><body>
+  <h2>Plan de découpe — STEP International</h2>
+  <div class="meta">Client : <b>${esc(client)}</b> · Réf : <b>${esc(refLabel)}</b>${monoAttr?` · Film : <b>${esc(monoAttr)}</b>`:''}${cmdInfo}<br>
+  ${metaTech}<br>
+  Packaging : Palette <b>${esc(palette)}</b> · Type <b>${esc(typeCond)}</b> · Étiquetage <b>${esc(etiquetage)}</b> · Cerclage <b>${esc(cerclage)}</b>${notesEmb?'<br><em style="font-size:10px;color:#666">'+esc(notesEmb).replace(/\n/g,' | ')+'</em>':''}</div>
+  ${sections}</body></html>`;
+  openPrintWindow(html);
 }
 function printEtiquette(d){
   const html=`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Étiquette solde</title>
@@ -3007,7 +3246,7 @@ async function doSave(){
     etiquetage:document.getElementById('planEtiquetage').value||'',
     cerclage:document.getElementById('planCerclage').value||'',
     notesEmballage:document.getElementById('planNotesEmballage').value||'',
-    commandePhoto:commandePhoto||'',
+    commandeFiles:(migrateCommandePhoto(),commandeFiles.slice()),
     deleted:false,
     date:isoNow()
   };
@@ -3071,8 +3310,9 @@ function renderSaves(){
         ${pkgLine}
       </div>
       <div class="save-actions">
-        <button class="btn btn-green btn-sm" onclick="openLoadModal('${s._id}')">📂</button>
-        <button class="btn btn-red btn-sm" onclick="deleteSave('${s._id}')">🗑️</button>
+        <button class="btn btn-green btn-sm" onclick="openLoadModal('${s._id}')" title="Charger">📂</button>
+        <button class="btn btn-ghost btn-sm" onclick="printSavedPlan('${s._id}')" title="Imprimer le plan">🖨️</button>
+        <button class="btn btn-red btn-sm" onclick="deleteSave('${s._id}')" title="Archiver">🗑️</button>
       </div>
     </div>`;
   }).join('');
@@ -3095,46 +3335,44 @@ function doLoad(){
   const s=savesCache.find(x=>x._id===loadTargetIdx);
   if(!s) return;
   loadedSaveId=s._id; // mémorisé pour suppression auto après confirmation de la fiche
-  selectMachine(s.machine);
-  document.getElementById('motherWidth').value=s.mother;
-  document.getElementById('bladeWidth').value=s.blade;
-  document.getElementById('edgeLoss').value=s.edgeLoss;
-  document.getElementById('planLargeur').value=s.largeur||'';
-  document.getElementById('planLongueur').value=s.longueur||'';
-  document.getElementById('planType').value=s.typeCond||s.carton||'';
-  document.getElementById('planPalette').value=s.palette||'';
-  document.getElementById('planEtiquetage').value=s.etiquetage||s.etiquette||'';
-  document.getElementById('planCerclage').value=s.cerclage||'';
-  document.getElementById('planNotesEmballage').value=s.notesEmballage||'';
-  document.getElementById('planNumCmd').value=s.numCmd||'';
-  document.getElementById('planDateLiv').value=s.dateLiv||'';
+  const G=id=>document.getElementById(id);
+  const set=(id,v)=>{const el=G(id);if(el)el.value=(v==null?'':v);};
   const hasGroups=Array.isArray(s.refGroups)&&s.refGroups.length>0;
+
+  // 1) CLIENT EN PRIORITÉ — isolé pour qu'aucune autre étape ne puisse l'empêcher.
   if(s.client&&s.client!=='—'){
-    const selClient=document.getElementById('planClient');
-    selClient.value=s.client;
-    onClientChange();                       // peuple les réf (CLIENT_DATA = synchrone)
-    if(!hasGroups){
-      applySavedRef(document.getElementById('planRef'),s.ref,s.client);
+    try{
+      const selClient=G('planClient');
+      if(selClient){ selClient.value=s.client; onClientChange(); }
+    }catch(e){ console.warn('doLoad client:',e); }
+  }
+
+  // 2) Machine + paramètres (non bloquants).
+  try{ selectMachine(s.machine); }catch(e){ console.warn('doLoad machine:',e); }
+  set('motherWidth',s.mother); set('bladeWidth',s.blade); set('edgeLoss',s.edgeLoss);
+  set('planLargeur',s.largeur); set('planLongueur',s.longueur);
+  set('planNumCmd',s.numCmd); set('planDateLiv',s.dateLiv);
+  // Packaging sauvegardé (écrase les règles auto déclenchées par onClientChange).
+  set('planType',s.typeCond||s.carton); set('planPalette',s.palette);
+  set('planEtiquetage',s.etiquetage||s.etiquette); set('planCerclage',s.cerclage);
+  set('planNotesEmballage',s.notesEmballage);
+  const pa=G('packagingAlert'); if(pa) pa.classList.add('hidden');
+
+  // 3) RÉFÉRENCES / LIGNES.
+  try{
+    if(hasGroups){
+      restoreRefGroups(s.refGroups);
+    }else{
+      document.querySelectorAll('.order-row').forEach(r=>r.remove());
+      applySavedRef(G('planRef'),s.ref,s.client);
       onRefChange();
+      (s.rows||[]).forEach(r=>addOrderRow(r.qty,r.width,r.carton||''));
     }
-    // ré-appliquer le packaging sauvegardé (écrase les règles auto du client)
-    document.getElementById('planType').value=s.typeCond||s.carton||'';
-    document.getElementById('planPalette').value=s.palette||'';
-    document.getElementById('planEtiquetage').value=s.etiquetage||s.etiquette||'';
-    document.getElementById('planCerclage').value=s.cerclage||'';
-    document.getElementById('planNotesEmballage').value=s.notesEmballage||'';
-    document.getElementById('packagingAlert').classList.add('hidden');
-  }
-  if(hasGroups){
-    // Plan multi-réfs : reconstruit tous les blocs réf
-    restoreRefGroups(s.refGroups);
-  }else{
-    // Plan mono-réf historique
-    document.querySelectorAll('.order-row').forEach(r=>r.remove());
-    (s.rows||[]).forEach(r=>addOrderRow(r.qty,r.width,r.carton||''));
-  }
-  commandePhoto=s.commandePhoto||'';refreshCommandePhotoZone();
-  recalcPlan();closeLoadModal();showPage(0);
+  }catch(e){ console.warn('doLoad refs:',e); }
+
+  commandePhoto='';commandeFiles=readCommandeFiles(s);refreshCommandePhotoZone();
+  try{ recalcPlan(); }catch(e){ console.warn('doLoad recalc:',e); }
+  closeLoadModal();showPage(0);
 }
 async function deleteSave(id){
   if(!confirm('Archiver cette sauvegarde ? (récupérable 45 jours)')) return;
@@ -3470,6 +3708,7 @@ async function saveCommandeFiche(rows,useful,blade,opts){
   const ini2=g('fOp2Active').checked?(g('fInitiales2').value||'—'):'';
   const op2Bob=g('fOp2Active').checked?(g('fOp2Bobine').value||''):'';
   const machine=getMachineLabel(ficheMachine);
+  const machine2=(g('fOp2Active').checked&&g('fOp2DiffMachine')?.checked&&ficheMachine2)?getMachineLabel(ficheMachine2):'';
   const lame=g('fNumLame').value||'—';
   const numJour=g('fNumJour').value||'—';
   const longueur=multi?computed.map(c=>c.longueur||'—').join(' / '):(g('fLongueur').value||g('planLongueur').value||'—');
@@ -3508,15 +3747,16 @@ async function saveCommandeFiche(rows,useful,blade,opts){
   }
 
   const ficheEntry={
-    name:planName,date:isoNow(),client,ref,ini,ini2,op2Bob,machine,lame,numJour,longueur,mother,rows,
+    name:planName,date:isoNow(),client,ref,ini,ini2,op2Bob,machine,machine2,lame,numJour,longueur,mother,rows,
     refGroups:multi?serializeRefGroups():null,
+    film:multi?'':(getRefGroups()[0]?.film||''), veka:multi?'':(getRefGroups()[0]?.veka||''),
     numCmd,dateLiv,deleted:false,cartonByWidth:{...cartonByWidth},
     palette,typeCond,etiquetage,cerclage,notesEmballage:notesEmb,
     groups:groupsForRecord,
     useful:multi?computed.map(c=>fmt(c.useful)).join(' / '):fmt(useful),blade:fmt(blade),pct:pct.toFixed(1),tempsStr,totalBobines:bobines.length,
     ficheDetail:ficheDetailTagged,
     nbPlan,nbFiche,hasEcart,ecartMsg,modifie:!!opts.modifié,
-    commandePhoto:commandePhoto||'',
+    commandeFiles:(migrateCommandePhoto(),commandeFiles.slice()),
     bls:[],
     valide:null,valideBy:null,valideAt:null
   };
@@ -3526,7 +3766,7 @@ async function saveCommandeFiche(rows,useful,blade,opts){
     tempsEntry={
       date:chronoStartTs||isoNow(),dateEnd:isoNow(),duree:chronoSec,
       operateur:ini,operateur2:ini2||'',op2Bobine:op2Bob||'',
-      machine,client,ref,rows,numCmd,deleted:false,
+      machine,machine2,client,ref,rows,numCmd,deleted:false,
       commandeDetail:rows.map(r=>`${r.qty}×${r.width}mm`).join(' + '),
       totalLaizes,nbBobines:bobines.length,
       largeur:g('planLargeur')?.value||'',longueur:g('planLongueur')?.value||'',
@@ -3615,7 +3855,7 @@ function resetAll(){
   document.getElementById('ficheLines').innerHTML='';
   ficheLines=[];
   Object.keys(ficholinePhotos).forEach(function(k){delete ficholinePhotos[k];});
-  commandePhoto='';refreshCommandePhotoZone();loadedSaveId=null;
+  commandePhoto='';commandeFiles=[];refreshCommandePhotoZone();loadedSaveId=null;
   commandTotals={};
   cartonByWidth={};
   document.getElementById('fClient').value='';
@@ -3633,6 +3873,9 @@ function resetAll(){
   selectedIni2='';
   document.querySelectorAll('#initBtns2 .ini-btn').forEach(function(b){b.classList.remove('sel2');});
   document.getElementById('fOp2Bobine').innerHTML='<option value="">— Choisir une bobine —</option>';
+  const op2dm=document.getElementById('fOp2DiffMachine');if(op2dm)op2dm.checked=false;
+  document.getElementById('op2MachineZone')?.classList.add('hidden');
+  ficheMachine2='';
   refreshEtiquetteSolde();
 
   // Re-sélectionner l'opérateur connecté
@@ -3857,14 +4100,14 @@ async function clearTemps(){
 function exportTemps(){
   const temps=tempsCache.filter(t=>!t.deleted);
   if(!temps.length){alert('Aucune donnée à exporter.');return;}
-  const headers='Date;Heure;Opérateur 1;Opérateur 2;Reprise bobine;Machine;Client;Référence;N° Commande;Commande;Durée (s);Durée (hms);Laizes totales;Bobines mères;Sec/laize;Largeur mère;Longueur;N°Jour;Commentaire';
+  const headers='Date;Heure;Opérateur 1;Opérateur 2;Reprise bobine;Machine;Machine op.2;Client;Référence;N° Commande;Commande;Durée (s);Durée (hms);Laizes totales;Bobines mères;Sec/laize;Largeur mère;Longueur;N°Jour;Commentaire';
   const rows=temps.map(t=>{
     const d=new Date(t.date);
     const secL=t.totalLaizes>0?Math.round(t.duree/t.totalLaizes):0;
     return [
       d.toLocaleDateString('fr-FR'),
       d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}),
-      t.operateur,t.operateur2||'',t.op2Bobine||'',t.machine,t.client,t.ref,t.numCmd||'',
+      t.operateur,t.operateur2||'',t.op2Bobine||'',t.machine,t.machine2||'',t.client,t.ref,t.numCmd||'',
       (t.commandeDetail||'').replace(/;/g,','),
       t.duree,fmtTimeFr(t.duree),
       t.totalLaizes,t.nbBobines,secL,t.largeur,t.longueur,t.numJour,
@@ -4654,9 +4897,31 @@ function exportNc(){
 function showFicheDetail(id,autoPrint){
   const f=fichesCache.find(x=>x._id===id);
   if(!f) return;
+  // Le plan affiché/imprimé est TOUJOURS reconstruit depuis l'état réel des
+  // bobines (ficheDetail) : reflète recalculs et modifs, même sur d'anciennes
+  // fiches. Repli sur f.groups si ficheDetail absent.
+  let liveGroups=f.groups||[];
+  const det=f.ficheDetail||[];
+  if(det.length){
+    const u=parseNum(f.useful)||0, b=parseNum(f.blade)||0;
+    // Regroupe par config réelle, en intégrant la laize propre à chaque bobine si dispo.
+    const out=[]; let i=0;
+    const norm=c=>(c||'').replace(/x/gi,'×').replace(/\*/g,'×').trim();
+    while(i<det.length){
+      const conf=norm(det[i].conf);
+      const uu=(det[i].useful!=null&&det[i].useful>0)?det[i].useful:u;
+      const bb=(det[i].blade!=null)?det[i].blade:b;
+      let cnt=1; while(i+cnt<det.length && norm(det[i+cnt].conf)===conf) cnt++;
+      const pat=parseConf(conf);
+      const tot=pat.length?calcStats(pat,bb).total:0;
+      out.push({label:pat.length?makeLabel(pat):(conf||'—'),count:cnt,total:fmt(tot),waste:fmt(uu-tot),isLast:false});
+      i+=cnt;
+    }
+    if(out.length) liveGroups=out;
+  }
   let bobNum=0;
-  const planRows=(f.groups||[]).map((g,gi)=>{
-    const isLast=gi===(f.groups.length-1);
+  const planRows=(liveGroups||[]).map((g,gi)=>{
+    const isLast=gi===(liveGroups.length-1);
     const rows=[];
     for(let k=0;k<g.count;k++){
       bobNum++;
@@ -4757,7 +5022,7 @@ function showFicheDetail(id,autoPrint){
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px">
     <div>
       <h1>${f.name}</h1>
-      <div class="sub">${new Date(f.date).toLocaleString('fr-FR')} · ${f.machine} · ${f.totalBobines} bobines · perte <span class="badge-pct">${f.pct}%</span> · chute ${(f.groups||[]).length?(f.groups[f.groups.length-1].waste||'0')+' mm':'—'}</div>
+      <div class="sub">${new Date(f.date).toLocaleString('fr-FR')} · ${f.machine} · ${f.totalBobines} bobines · perte <span class="badge-pct">${f.pct}%</span> · chute ${(liveGroups||[]).length?(liveGroups[liveGroups.length-1].waste||'0')+' mm':'—'}</div>
     </div>
     <button onclick="window.print()" style="padding:8px 16px;border-radius:8px;border:1px solid #444;background:#222;color:#e5e5e3;font-size:13px;cursor:pointer">🖨 Imprimer</button>
   </div>
@@ -4769,9 +5034,18 @@ function showFicheDetail(id,autoPrint){
       ${op2Line}
       <span>Client</span><span>${esc(f.client)}</span>
       <span>Référence</span><span>${esc(f.ref)}</span>
+      ${(()=>{
+        let attr='';
+        if(Array.isArray(f.refGroups)&&f.refGroups.length){
+          attr=f.refGroups.map(g=>{const a=[g.film,g.veka].filter(Boolean).join(' · ');return a?((g.ref?g.ref+': ':'')+a):'';}).filter(Boolean).join(' | ');
+        }else{
+          attr=[f.film,f.veka].filter(Boolean).join(' · ');
+        }
+        return attr?`<span>Film</span><span>${esc(attr)}</span>`:'';
+      })()}
       ${(f.numCmd&&f.numCmd!=='—')?`<span>N° Commande</span><span>${esc(f.numCmd)}</span>`:''}
       ${(f.dateLiv&&f.dateLiv!=='—')?`<span>Livraison client</span><span>${esc(f.dateLiv)}</span>`:''}
-      <span>Machine</span><span>${esc(f.machine)}</span>
+      <span>Machine</span><span>${f.machine2&&f.machine2!==f.machine?`${esc(f.machine)} <span style="color:#888">(op.1)</span> · <b style="color:#f59e0b">${esc(f.machine2)}</b> <span style="color:#888">(op.2${f.op2Bob?` dès bobine ${esc(f.op2Bob)}`:''})</span>`:esc(f.machine)}</span>
       <span>Bobine mère</span><span>${f.mother} mm · utile ${f.useful} mm · lame ${f.blade} mm</span>
       <span>Longueur réf.</span><span>${f.longueur} m</span>
       <span>Lame N°</span><span>${f.lame}</span>
@@ -4787,10 +5061,14 @@ function showFicheDetail(id,autoPrint){
     <div class="card-title">Commande initiale</div>
     <div>${(f.rows||[]).map(r=>`<span class="cmd-row">${r.qty} × ${r.width} mm</span>`).join('')}</div>
   </div>
-  ${f.commandePhoto?`<div class="card">
-    <div class="card-title">Photo de la commande client</div>
-    <a href="${f.commandePhoto}" target="_blank"><img src="${f.commandePhoto}" style="max-width:100%;border-radius:8px;border:1px solid #2a2a28"></a>
-  </div>`:''}
+  ${(()=>{
+    const cf=readCommandeFiles(f);
+    if(!cf.length) return '';
+    const icon=t=>t==='image'?'🖼':t==='pdf'?'📄':t==='doc'?'📝':t==='xls'?'📊':'📎';
+    const imgs=cf.filter(x=>x.type==='image').map(x=>`<a href="${x.url}" target="_blank"><img src="${x.url}" style="max-width:100%;border-radius:8px;border:1px solid #2a2a28;margin-bottom:8px"></a>`).join('');
+    const docs=cf.filter(x=>x.type!=='image').map(x=>`<div style="margin:4px 0"><a href="${x.url}" target="_blank" rel="noopener" style="color:#60a5fa;font-weight:600">${icon(x.type)} ${esc(x.name||'fichier')}</a></div>`).join('');
+    return `<div class="card"><div class="card-title">Fichiers de la commande client</div>${imgs}${docs}</div>`;
+  })()}
   <div class="card">
     <div class="card-title">Plan de découpe — bobine par bobine</div>
     <table>
@@ -4803,9 +5081,7 @@ function showFicheDetail(id,autoPrint){
   </div>
   </body></html>`;
 
-  const w=window.open('','_blank');
-  if(w){w.document.write(html);w.document.close();if(autoPrint){setTimeout(()=>{try{w.print();}catch(e){}},500);}}
-  else alert('Autorise les pop-ups pour voir la fiche.');
+  openPrintWindow(html, !!autoPrint);
 }
 
 function showCommandeRecap(numCmd){
@@ -5073,9 +5349,9 @@ async function permanentDelete(collection,id){
 function exportFiches(){
   const fiches=fichesCache.filter(f=>!f.deleted);
   if(!fiches.length){alert('Aucune donnée.');return;}
-  const hdr='Nom;Date;Opérateur 1;Opérateur 2;Reprise bobine;Client;Référence;Machine;Bobine mère;Utile;Lame;Longueur réf.;N°Lame;N°Jour;Palette;Type cond.;Étiquetage;Cerclage;Notes emballage;Commande;Total bobines;Perte %;Temps';
+  const hdr='Nom;Date;Opérateur 1;Opérateur 2;Reprise bobine;Client;Référence;Machine;Machine op.2;Bobine mère;Utile;Lame;Longueur réf.;N°Lame;N°Jour;Palette;Type cond.;Étiquetage;Cerclage;Notes emballage;Commande;Total bobines;Perte %;Temps';
   const rows=fiches.map(f=>[
-    f.name,new Date(f.date).toLocaleDateString('fr-FR'),f.ini,f.ini2||'',f.op2Bob||'',f.client,f.ref,f.machine,
+    f.name,new Date(f.date).toLocaleDateString('fr-FR'),f.ini,f.ini2||'',f.op2Bob||'',f.client,f.ref,f.machine,f.machine2||'',
     f.mother,f.useful,f.blade,f.longueur,f.lame,f.numJour,
     f.palette||'',f.typeCond||f.carton||'',f.etiquetage||f.etiquette||'',f.cerclage||'',(f.notesEmballage||'').replace(/[\n;]/g,' '),
     (f.rows||[]).map(r=>`${r.qty}x${r.width}`).join('+'),
@@ -5094,6 +5370,17 @@ function selectFicheMachine(m){
   document.getElementById('fBtnFeba').className='machine-btn-fiche'+(m==='feba'?' sel-feba':'');
   document.getElementById('fBtnMaveg').className='machine-btn-fiche'+(m==='maveg'?' sel-maveg':'');
   document.getElementById('fBtnCevenini').className='machine-btn-fiche'+(m==='cevenini'?' sel-cevenini':'');
+}
+function selectFicheMachine2(m){
+  ficheMachine2=m;
+  document.getElementById('fBtnFeba2').className='machine-btn-fiche'+(m==='feba'?' sel-feba':'');
+  document.getElementById('fBtnMaveg2').className='machine-btn-fiche'+(m==='maveg'?' sel-maveg':'');
+  document.getElementById('fBtnCevenini2').className='machine-btn-fiche'+(m==='cevenini'?' sel-cevenini':'');
+}
+function toggleOp2Machine(){
+  const on=document.getElementById('fOp2DiffMachine').checked;
+  document.getElementById('op2MachineZone').classList.toggle('hidden',!on);
+  if(on && !ficheMachine2){ selectFicheMachine2(ficheMachine||'feba'); }
 }
 function selectIni(v){
   selectedIni=v;document.getElementById('fInitiales').value=v;
@@ -5421,8 +5708,8 @@ function serializeFicheState(){
     plan:{machine:currentMachine,mother:g('motherWidth')?.value||'',blade:g('bladeWidth')?.value||'',edge:g('edgeLoss')?.value||'',
       client:g('planClient')?.value||'',ref:g('planRef')?.value||'',largeur:g('planLargeur')?.value||'',longueur:g('planLongueur')?.value||'',
       numCmd:g('planNumCmd')?.value||'',dateLiv:g('planDateLiv')?.value||'',type:g('planType')?.value||'',palette:g('planPalette')?.value||'',
-      etiquetage:g('planEtiquetage')?.value||'',cerclage:g('planCerclage')?.value||'',notes:g('planNotesEmballage')?.value||'',rows:getOrderRows(),refGroups:serializeRefGroups(),commandePhoto:commandePhoto||''},
-    fiche:{machine:ficheMachine,ini:g('fInitiales')?.value||'',ini2:g('fInitiales2')?.value||'',op2Active:g('fOp2Active')?.checked||false,op2Bob:g('fOp2Bobine')?.value||'',
+      etiquetage:g('planEtiquetage')?.value||'',cerclage:g('planCerclage')?.value||'',notes:g('planNotesEmballage')?.value||'',rows:getOrderRows(),refGroups:serializeRefGroups(),commandeFiles:(migrateCommandePhoto(),commandeFiles.slice())},
+    fiche:{machine:ficheMachine,machine2:ficheMachine2,op2DiffMachine:g('fOp2DiffMachine')?.checked||false,ini:g('fInitiales')?.value||'',ini2:g('fInitiales2')?.value||'',op2Active:g('fOp2Active')?.checked||false,op2Bob:g('fOp2Bobine')?.value||'',
       lame:g('fNumLame')?.value||'',numJour:g('fNumJour')?.value||'',longueur:g('fLongueur')?.value||'',client:g('fClient')?.value||'',ref:g('fRef')?.value||'',
       numCmd:g('fNumCmd')?.value||'',dateLiv:g('fDateLiv')?.value||'',type:g('fType')?.value||'',palette:g('fPalette')?.value||'',etiquetage:g('fEtiquetage')?.value||'',cerclage:g('fCerclage')?.value||'',notes:g('fNotesEmballage')?.value||''},
     chrono:{sec:chronoSec, startTs:chronoStartTs, wasRunning:chronoRunning},
@@ -5523,7 +5810,7 @@ function restoreFicheState(st){
     document.querySelectorAll('.order-row').forEach(r=>r.remove());
     (st.plan.rows||[]).forEach(r=>addOrderRow(r.qty,r.width,r.carton||''));
   }
-  commandePhoto=st.plan.commandePhoto||'';refreshCommandePhotoZone();
+  commandePhoto='';commandeFiles=readCommandeFiles(st.plan);refreshCommandePhotoZone();
   recalcPlan();
   commandTotals={};cartonByWidth={};
   const allRowsR=hasGroups?[].concat(...st.plan.refGroups.map(x=>x.rows||[])):(st.plan.rows||[]);
@@ -5535,7 +5822,9 @@ function restoreFicheState(st){
   setV('fClient',st.fiche.client);setV('fRef',st.fiche.ref);setV('fNumCmd',st.fiche.numCmd);setV('fDateLiv',st.fiche.dateLiv);
   setV('fType',st.fiche.type);setV('fPalette',st.fiche.palette);setV('fEtiquetage',st.fiche.etiquetage);setV('fCerclage',st.fiche.cerclage);setV('fNotesEmballage',st.fiche.notes);
   if(st.fiche.ini){selectedIni=st.fiche.ini;document.querySelectorAll('#initBtns .ini-btn').forEach(b=>b.classList.toggle('sel',b.textContent===st.fiche.ini));}
+  if(st.fiche.ini2){selectedIni2=st.fiche.ini2;document.querySelectorAll('#initBtns2 .ini-btn').forEach(b=>b.classList.toggle('sel2',b.textContent===st.fiche.ini2));}
   if(g('fOp2Active')){g('fOp2Active').checked=!!st.fiche.op2Active;toggleOp2();}
+  if(g('fOp2DiffMachine')){g('fOp2DiffMachine').checked=!!st.fiche.op2DiffMachine;ficheMachine2=st.fiche.machine2||'';toggleOp2Machine();if(ficheMachine2)selectFicheMachine2(ficheMachine2);}
   document.getElementById('ficheLines').innerHTML='';ficheLines=[];
   Object.keys(ficholinePhotos).forEach(k=>delete ficholinePhotos[k]);
   (st.lines||[]).forEach(restoreFicheLineFromData);
