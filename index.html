@@ -2256,6 +2256,7 @@ function onClientChange(){
   const lg=document.getElementById('planLongueur'); if(lg) lg.value='';
   const lr=document.getElementById('planLargeur'); if(lr) lr.value='';
   updateVekaVisibility();
+  updateMandrinVisibility();
   if(client) applyPackagingRules(client);
   recalcPlan();
 }
@@ -2293,12 +2294,13 @@ function getOrderRows(){
     const w=parseNum(row.querySelector('[data-type="width"]').value);
     const cEl=row.querySelector('[data-type="carton"]');
     const carton=cEl?Math.floor(parseNum(cEl.value)):0;
-    if(qty>0&&w>0){const o={qty,width:w};if(carton>0)o.carton=carton;rows.push(o);}
+    const mandrin=(row.querySelector('[data-type="mandrin"]')?.value||'').trim();
+    if(qty>0&&w>0){const o={qty,width:w};if(carton>0)o.carton=carton;if(mandrin)o.mandrin=mandrin;rows.push(o);}
   });
   return rows;
 }
 // Crée le HTML d'une ligne de découpe (sans l'insérer).
-function makeOrderRow(qty='',width='',carton='',rattrapage=false){
+function makeOrderRow(qty='',width='',carton='',rattrapage=false,mandrin=''){
   const div=document.createElement('div');
   div.className='order-row';
   if(rattrapage){div.dataset.rattrapage='1';div.style.borderLeft='3px solid var(--orange)';div.style.paddingLeft='6px';}
@@ -2309,13 +2311,15 @@ function makeOrderRow(qty='',width='',carton='',rattrapage=false){
     <span class="order-lbl">mm</span>
     <span class="order-lbl carton-cell" style="display:none">· Carton</span>
     <input type="text" data-type="carton" placeholder="3" value="${carton}" inputmode="numeric" oninput="debouncedRecalcPlan()" class="carton-cell" style="max-width:70px;display:none">
+    <span class="order-lbl mandrin-cell" style="display:none">· Mandrin</span>
+    <input type="text" data-type="mandrin" placeholder="0000" value="${mandrin}" inputmode="numeric" maxlength="4" oninput="this.value=this.value.replace(/\\D/g,'').slice(0,4)" class="mandrin-cell" style="max-width:70px;display:none">
     <button class="btn btn-red btn-sm" style="padding:7px 10px" onclick="this.parentElement.remove();recalcPlan()">✕</button>`;
   return div;
 }
 // Ajoute une ligne au premier bloc réf (rétro-compat appels existants).
-function addOrderRow(qty='',width='',carton='',rattrapage=false){
+function addOrderRow(qty='',width='',carton='',rattrapage=false,mandrin=''){
   const first=document.querySelector('.ref-block .rb-rows');
-  if(first){first.appendChild(makeOrderRow(qty,width,carton,rattrapage));updateCartonVisibility();}
+  if(first){first.appendChild(makeOrderRow(qty,width,carton,rattrapage,mandrin));updateCartonVisibility();}
 }
 // Ajoute une ligne au bloc réf qui contient le bouton cliqué.
 function addOrderRowTo(btn){
@@ -2448,6 +2452,12 @@ function isLineFrozen(id){
 function updateCartonVisibility(){
   const show=(document.getElementById('planType')?.value||'')==='Carton';
   document.querySelectorAll('.order-row .carton-cell').forEach(el=>{el.style.display=show?'':'none';});
+  updateMandrinVisibility();
+}
+// Affiche/masque la case "Code mandrin" (4 chiffres) — uniquement pour Legrand France.
+function updateMandrinVisibility(){
+  const show=(document.getElementById('planClient')?.value||'')==='Legrand France';
+  document.querySelectorAll('.order-row .mandrin-cell').forEach(el=>{el.style.display=show?'':'none';});
 }
 function initDefaultRows(){for(let i=0;i<5;i++) addOrderRow();}
 
@@ -2643,7 +2653,8 @@ function getRefGroups(){
         const w=parseNum(row.querySelector('[data-type="width"]')?.value);
         const cEl=row.querySelector('[data-type="carton"]');
         const carton=cEl?Math.floor(parseNum(cEl.value)):0;
-        if(qty>0&&w>0){const o={qty,width:w};if(carton>0)o.carton=carton;rows.push(o);}
+        const mandrin=(row.querySelector('[data-type="mandrin"]')?.value||'').trim();
+        if(qty>0&&w>0){const o={qty,width:w};if(carton>0)o.carton=carton;if(mandrin)o.mandrin=mandrin;rows.push(o);}
       });
       groups.push({ref,longueur,film,veka,mother,edge,useful,blade,rows});
     });
@@ -2713,7 +2724,7 @@ function restoreRefGroups(arr){
   setRb('film',g0.film); setRb('veka',g0.veka);
   const refSel=document.querySelector('.ref-block [data-rb="ref"]'); applySavedRef(refSel,g0.ref,client);
   const cont0=document.querySelector('.ref-block .rb-rows');
-  (g0.rows||[]).forEach(r=>cont0.appendChild(makeOrderRow(r.qty,r.width,r.carton||'')));
+  (g0.rows||[]).forEach(r=>cont0.appendChild(makeOrderRow(r.qty,r.width,r.carton||'',false,r.mandrin||'')));
   // Blocs suivants
   for(let i=1;i<arr.length;i++){
     addRefBlock();
@@ -2725,7 +2736,7 @@ function restoreRefGroups(arr){
     const rs=bl.querySelector('[data-rb="ref"]'); applySavedRef(rs,gi.ref,client);
     const cont=bl.querySelector('.rb-rows');
     cont.querySelectorAll('.order-row').forEach(r=>r.remove()); // addRefBlock met 2 lignes vides
-    (gi.rows||[]).forEach(r=>cont.appendChild(makeOrderRow(r.qty,r.width,r.carton||'')));
+    (gi.rows||[]).forEach(r=>cont.appendChild(makeOrderRow(r.qty,r.width,r.carton||'',false,r.mandrin||'')));
   }
   updateCartonVisibility();
   updateVekaVisibility();
@@ -2940,6 +2951,18 @@ function openPrintWindow(html,autoPrint){
     if(w){w.document.open();w.document.write(html);w.document.close();if(autoPrint!==false)setTimeout(()=>{try{w.print();}catch(e){}},400);}
   }
 }
+// Récap "Code mandrin par largeur" — uniquement Legrand France, si des codes existent.
+// `groups` = sortie de packRefGroups (chaque c a c.rows avec éventuellement r.mandrin).
+function mandrinRecapHTML(groups,client){
+  if(client!=='Legrand France') return '';
+  const map={};
+  (groups||[]).forEach(c=>{(c.rows||[]).forEach(r=>{ if(r.mandrin){ map[r.width]=r.mandrin; } });});
+  const widths=Object.keys(map).map(Number).sort((a,b)=>a-b);
+  if(!widths.length) return '';
+  const rows=widths.map(w=>`<tr><td>${fmt(w)} mm</td><td style="font-family:monospace;font-weight:700">${esc(map[w])}</td></tr>`).join('');
+  return `<h3 style="font-size:14px;margin:18px 0 6px;color:#b45309">🏷 Codes mandrin (Legrand France)</h3>
+  <table><tr><th>Largeur</th><th>Code mandrin (4 chiffres)</th></tr>${rows}</table>`;
+}
 function getPlanHTML(){
   const groups=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
   const mn=getMachineLabel(currentMachine);
@@ -2989,7 +3012,8 @@ function getPlanHTML(){
   <div class="meta">Client : <b>${client}</b> · Réf : <b>${refLabel}</b>${monoAttr?` · Film : <b>${esc(monoAttr)}</b>`:''}<br>
   ${metaTech}<br>
   Packaging : Palette <b>${palette}</b> · Type <b>${typeCond}</b> · Étiquetage <b>${etiquetage}</b> · Cerclage <b>${cerclage}</b>${notesEmb?'<br><em style="font-size:10px;color:#666">'+notesEmb.replace(/\n/g,' | ')+'</em>':''}</div>
-  ${sections}</body></html>`;
+  ${sections}
+  ${mandrinRecapHTML(groups,client)}</body></html>`;
 }
 // Imprime un plan SAUVEGARDÉ (Données > Plans) sans le charger dans l'éditeur.
 // Reconstruit le HTML depuis l'objet save (refGroups), comme getPlanHTML mais
@@ -3047,7 +3071,8 @@ function printSavedPlan(id){
   <div class="meta">Client : <b>${esc(client)}</b> · Réf : <b>${esc(refLabel)}</b>${monoAttr?` · Film : <b>${esc(monoAttr)}</b>`:''}${cmdInfo}<br>
   ${metaTech}<br>
   Packaging : Palette <b>${esc(palette)}</b> · Type <b>${esc(typeCond)}</b> · Étiquetage <b>${esc(etiquetage)}</b> · Cerclage <b>${esc(cerclage)}</b>${notesEmb?'<br><em style="font-size:10px;color:#666">'+esc(notesEmb).replace(/\n/g,' | ')+'</em>':''}</div>
-  ${sections}</body></html>`;
+  ${sections}
+  ${mandrinRecapHTML(groups,client)}</body></html>`;
   openPrintWindow(html);
 }
 function printEtiquette(d){
@@ -3366,7 +3391,7 @@ function doLoad(){
       document.querySelectorAll('.order-row').forEach(r=>r.remove());
       applySavedRef(G('planRef'),s.ref,s.client);
       onRefChange();
-      (s.rows||[]).forEach(r=>addOrderRow(r.qty,r.width,r.carton||''));
+      (s.rows||[]).forEach(r=>addOrderRow(r.qty,r.width,r.carton||'',false,r.mandrin||''));
     }
   }catch(e){ console.warn('doLoad refs:',e); }
 
@@ -3750,6 +3775,7 @@ async function saveCommandeFiche(rows,useful,blade,opts){
     name:planName,date:isoNow(),client,ref,ini,ini2,op2Bob,machine,machine2,lame,numJour,longueur,mother,rows,
     refGroups:multi?serializeRefGroups():null,
     film:multi?'':(getRefGroups()[0]?.film||''), veka:multi?'':(getRefGroups()[0]?.veka||''),
+    mandrinByWidth:(()=>{const m={};getRefGroups().forEach(g=>(g.rows||[]).forEach(r=>{if(r.mandrin)m[r.width]=r.mandrin;}));return m;})(),
     numCmd,dateLiv,deleted:false,cartonByWidth:{...cartonByWidth},
     palette,typeCond,etiquetage,cerclage,notesEmballage:notesEmb,
     groups:groupsForRecord,
@@ -4919,6 +4945,24 @@ function showFicheDetail(id,autoPrint){
     }
     if(out.length) liveGroups=out;
   }
+  // Codes mandrin par largeur (Legrand France). Rétro-compat : mandrinByWidth,
+  // sinon reconstruit depuis rows / refGroups de la fiche.
+  const isLegrandFr=(f.client==='Legrand France');
+  const mandrinMap=(()=>{
+    const m={};
+    if(f.mandrinByWidth&&typeof f.mandrinByWidth==='object'){Object.assign(m,f.mandrinByWidth);}
+    else{
+      const src=Array.isArray(f.refGroups)&&f.refGroups.length?[].concat(...f.refGroups.map(g=>g.rows||[])):(f.rows||[]);
+      src.forEach(r=>{if(r&&r.mandrin)m[r.width]=r.mandrin;});
+    }
+    return m;
+  })();
+  const mandrinForConf=(label)=>{
+    if(!isLegrandFr) return '';
+    const pat=parseConf(label||'');
+    const codes=[...new Set(pat.map(p=>mandrinMap[p.width]).filter(Boolean))];
+    return codes.length?codes.join(' / '):'';
+  };
   let bobNum=0;
   const planRows=(liveGroups||[]).map((g,gi)=>{
     const isLast=gi===(liveGroups.length-1);
@@ -4944,6 +4988,7 @@ function showFicheDetail(id,autoPrint){
       rows.push(`<tr style="border-bottom:1px solid #2a2a28${fd&&fd.coupee?';opacity:.5':''}">
         <td style="padding:10px 12px;font-weight:700;color:#a78bfa;white-space:nowrap">Bobine ${bobNum}${isLast&&k===g.count-1?' <span style="color:#f59e0b;font-size:11px">[SOLDE]</span>':''}</td>
         <td style="padding:10px 12px;font-family:monospace;font-size:13px">${g.label}</td>
+        ${isLegrandFr?`<td style="padding:10px 12px;font-family:monospace;font-weight:700;color:#f59e0b;white-space:nowrap">${mandrinForConf(g.label)||'<span style="color:#555">—</span>'}</td>`:''}
         <td style="padding:10px 12px;text-align:right;color:#60a5fa;white-space:nowrap">${g.total} mm</td>
         <td style="padding:10px 12px;text-align:right;color:#888;white-space:nowrap">${g.waste} mm</td>
         <td style="padding:10px 12px">${etiq}</td>
@@ -4978,6 +5023,7 @@ function showFicheDetail(id,autoPrint){
     return `<tr style="border-bottom:1px solid #2a2a28;background:rgba(245,158,11,0.08)${fd.coupee?';opacity:.6':''}">
         <td style="padding:10px 12px;font-weight:700;color:#f59e0b;white-space:nowrap">Bobine ${bn} <span style="font-size:10px;background:#3d2a00;color:#f59e0b;padding:2px 6px;border-radius:4px;margin-left:4px">⚠ HORS PLAN</span></td>
         <td style="padding:10px 12px;font-family:monospace;font-size:13px;color:#f59e0b">${fd.conf||'—'}</td>
+        ${isLegrandFr?`<td style="padding:10px 12px;font-family:monospace;font-weight:700;color:#f59e0b;white-space:nowrap">${mandrinForConf(fd.conf)||'<span style="color:#555">—</span>'}</td>`:''}
         <td style="padding:10px 12px;text-align:right;color:#888">—</td>
         <td style="padding:10px 12px;text-align:right;color:#888">—</td>
         <td style="padding:10px 12px">${etiq}</td>
@@ -5073,7 +5119,7 @@ function showFicheDetail(id,autoPrint){
     <div class="card-title">Plan de découpe — bobine par bobine</div>
     <table>
       <thead><tr>
-        <th>N°</th><th>Découpe</th><th>Total</th><th>Chute</th>
+        <th>N°</th><th>Découpe</th>${isLegrandFr?'<th>Mandrin</th>':''}<th>Total</th><th>Chute</th>
         <th>Étiquette</th><th>Photo</th><th>Test 2ème bob.</th><th>Non-conformité</th><th>État</th>
       </tr></thead>
       <tbody>${planRows}${horsPlanRows}</tbody>
@@ -5808,7 +5854,7 @@ function restoreFicheState(st){
     document.querySelectorAll('.ref-block.extra').forEach(b=>b.remove());
     _refBlockSeq=1; renumberRefBlocks();
     document.querySelectorAll('.order-row').forEach(r=>r.remove());
-    (st.plan.rows||[]).forEach(r=>addOrderRow(r.qty,r.width,r.carton||''));
+    (st.plan.rows||[]).forEach(r=>addOrderRow(r.qty,r.width,r.carton||'',false,r.mandrin||''));
   }
   commandePhoto='';commandeFiles=readCommandeFiles(st.plan);refreshCommandePhotoZone();
   recalcPlan();
