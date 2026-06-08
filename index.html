@@ -2597,7 +2597,8 @@ function recalcPlan(){
     const useful=c.useful, blade=c.blade;
     if(multi){
       const refLbl=c.ref||('Référence '+(ci+1));
-      html+=`<div class="ref-band">🎞 ${refLbl} — laize ${fmt(useful)} mm · ${c.stats.totalBobines} bobine${c.stats.totalBobines>1?'s':''} · perte ${c.stats.pct.toFixed(1)}%</div>`;
+      const mlPart=(c.longueur!=null&&String(c.longueur).trim()!=='')?` · ${esc(String(c.longueur))} ml`:'';
+      html+=`<div class="ref-band">🎞 ${refLbl} — laize ${fmt(useful)} mm${mlPart} · ${c.stats.totalBobines} bobine${c.stats.totalBobines>1?'s':''} · perte ${c.stats.pct.toFixed(1)}%</div>`;
     }
     c.planGroups.forEach((g,gi)=>{
       const st=calcStats(g.pattern,blade);
@@ -3010,6 +3011,12 @@ function chronoTick(){
 }
 function chronoStart(){
   if(chronoRunning) return;
+  const lame=document.getElementById('fNumLame');
+  if(!lame||!lame.value.trim()){
+    alert('⚠ Renseigne le n° de lame avant de démarrer le chronomètre.');
+    if(lame) lame.focus();
+    return;
+  }
   chronoRunning=true;
   chronoStartTs=chronoStartTs||new Date().toISOString();
   chronoInterval=setInterval(chronoTick,1000);
@@ -3122,50 +3129,11 @@ async function confirmCommande(){
     }
   }
 
-  // === RECALCUL DES ÉCARTS (déficit / surplus par largeur) ===
-  const ec=computeEcarts(rows);
-  const hasDeficit=Object.keys(ec.deficit).length>0;
-  const hasSurplus=Object.keys(ec.surplus).length>0;
-  const modifié=hasDeficit||hasSurplus;
-  let ecartLines=[];
-  Object.entries(ec.deficit).forEach(([w,q])=>ecartLines.push(`−${q}×${w}mm (manquant)`));
-  Object.entries(ec.surplus).forEach(([w,q])=>ecartLines.push(`+${q}×${w}mm (en trop)`));
-
-  if(modifié){
-    let msg='⚠ Écart détecté entre le plan et la découpe réelle :\n\n'+ecartLines.join('\n')+'\n\n';
-    if(hasDeficit) msg+='→ Une bobine de RATTRAPAGE va être ajoutée (plan + fiche) pour couper les manquants.\n';
-    if(hasSurplus) msg+='→ Le surplus sera déduit des bobines non encore coupées du même plan.\n';
-    msg+='\nLa fiche sera marquée « modifiée ». Confirmer ?';
-    if(!confirm(msg)) return;
-  }
-
-  // SURPLUS : déduire des bobines NON coupées du plan (P1)
-  if(hasSurplus){
-    applySurplusDeduction(ec.surplus);
-  }
-
-  // DÉFICIT : créer la/les bobine(s) de rattrapage dans la fiche ET dans le plan
-  if(hasDeficit){
-    const ratGroups=buildRattrapageGroups(ec.deficit,useful,blade);
-    // Dans la FICHE : ajouter les lignes de rattrapage (badge léger orange)
-    let ri=1;
-    ratGroups.forEach(g=>{
-      for(let ci=0;ci<g.count;ci++){
-        addFicheLine({label:'RATTRAPAGE-'+String(ri).padStart(2,'0'),conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + '),rattrapage:true});
-        ri++;
-      }
-    });
-    // Dans le PLAN : ajouter les manquants comme lignes de commande supplémentaires (taguées rattrapage)
-    Object.entries(ec.deficit).forEach(([w,q])=>{ addOrderRow(q,Number(w),'',true); });
-    recalcPlan();
-    refreshOp2BobineList();
-    alert('✓ Bobine(s) de rattrapage ajoutée(s) dans la fiche et le plan.\n\nL\'opérateur peut maintenant couper le rattrapage, puis re-confirmer.');
-    // On NE sauvegarde pas tout de suite : l'opérateur doit couper le rattrapage et reconfirmer.
-    return;
-  }
-
-  // === Pas de déficit (ou surplus seul) → on enregistre la fiche ===
-  await saveCommandeFiche(rows,useful,blade,{modifié,ecartLines});
+  // === ENVOYER = vérifier + enregistrer uniquement ===
+  // Tout ajustement (rattrapage / reste / surplus) se fait via le bouton ♻ Recalculer.
+  // Envoyer n'ajoute JAMAIS de bobine (sinon boucle infinie : la bobine ajoutée
+  // n'étant pas coupée recréait un déficit à chaque clic).
+  await saveCommandeFiche(rows,useful,blade,{modifié:false,ecartLines:[]});
 }
 
 // === BOUTON "♻ Recalculer les écarts" (par bobine, agit sur toute la commande) ===
@@ -3208,42 +3176,54 @@ function recalcEcartsFromFiche(){
     else if(k>c) surplus[w]=k-c;
   });
 
-  // Retirer les bobines NON figées (plan pas encore réalisé), pour régénérer un plan optimal
-  ficheLines.filter(l=>!frozenSet.has(l.id)).forEach(l=>{document.getElementById(l.id)?.remove();delete ficholinePhotos[l.id];});
-  ficheLines=ficheLines.filter(l=>frozenSet.has(l.id));
-
-  // Re-pack du résiduel → bobines restantes optimisées
-  const items=[];
-  Object.entries(residual).forEach(([w,q])=>{for(let i=0;i<q;i++) items.push(Number(w));});
-  let added=0, wasteReste=0;
-  if(items.length){
-    const bobines=pack(items.sort((a,b)=>b-a),useful,blade);
-    const groups=groupBobines(bobines,blade);
-    let ri=1;
-    groups.forEach(g=>{
-      wasteReste+=(useful-calcStats(g.pattern,blade).total)*g.count;
-      for(let ci=0;ci<g.count;ci++){
-        addFicheLine({label:'RESTE-'+String(ri).padStart(2,'0'),conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + ')});
-        ri++; added++;
-      }
-    });
+  // Retour visuel immédiat : l'opérateur voit que le recalcul est lancé.
+  const banner=document.getElementById('coupeeBanner');
+  if(banner){
+    banner.style.display='block';
+    banner.style.background='#1f1535';banner.style.borderColor='var(--violet)';banner.style.color='var(--violet)';
+    banner.innerHTML='♻ Recalcul en cours…';
   }
 
-  recalcPlan();
-  updateAllCumuls();
-  updateCoupeeStatus();
-  refreshOp2BobineList();
-  renumberFicheLines();
-  refreshEtiquetteSolde();
+  // L'application réelle (suppression des non-figées + re-pack + affichage) se fait
+  // ~1s plus tard, pour que l'opérateur voie distinctement les bobines du plan changer.
+  setTimeout(()=>{
+    // Retirer les bobines NON figées (plan pas encore réalisé), pour régénérer un plan optimal
+    ficheLines.filter(l=>!frozenSet.has(l.id)).forEach(l=>{document.getElementById(l.id)?.remove();delete ficholinePhotos[l.id];});
+    ficheLines=ficheLines.filter(l=>frozenSet.has(l.id));
 
-  // Récap
-  let parts=[];
-  if(added>0) parts.push(`→ ${added} bobine(s) restante(s) à couper (ré-optimisées, perte restante ${fmt(Math.round(wasteReste))} mm).`);
-  else parts.push('→ Commande couverte : plus rien à couper.');
-  if(Object.keys(surplus).length){
-    parts.push('⚠ Surplus déjà coupé (tracé, non recoupé) : '+Object.entries(surplus).map(([w,q])=>`${q}×${w}mm`).join(', ')+'.');
-  }
-  alert('♻ Plan ré-optimisé.\n\n'+parts.join('\n\n'));
+    // Re-pack du résiduel → bobines restantes optimisées
+    const items=[];
+    Object.entries(residual).forEach(([w,q])=>{for(let i=0;i<q;i++) items.push(Number(w));});
+    let added=0, wasteReste=0;
+    if(items.length){
+      const bobines=pack(items.sort((a,b)=>b-a),useful,blade);
+      const groups=groupBobines(bobines,blade);
+      let ri=1;
+      groups.forEach(g=>{
+        wasteReste+=(useful-calcStats(g.pattern,blade).total)*g.count;
+        for(let ci=0;ci<g.count;ci++){
+          addFicheLine({label:'RESTE-'+String(ri).padStart(2,'0'),conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + ')});
+          ri++; added++;
+        }
+      });
+    }
+
+    recalcPlan();
+    updateAllCumuls();
+    updateCoupeeStatus();
+    refreshOp2BobineList();
+    renumberFicheLines();
+    refreshEtiquetteSolde();
+
+    // Récap
+    let parts=[];
+    if(added>0) parts.push(`→ ${added} bobine(s) restante(s) à couper (ré-optimisées, perte restante ${fmt(Math.round(wasteReste))} mm).`);
+    else parts.push('→ Commande couverte : plus rien à couper.');
+    if(Object.keys(surplus).length){
+      parts.push('⚠ Surplus déjà coupé (tracé, non recoupé) : '+Object.entries(surplus).map(([w,q])=>`${q}×${w}mm`).join(', ')+'.');
+    }
+    alert('♻ Plan ré-optimisé.\n\n'+parts.join('\n\n'));
+  },1000);
 }
 
 // Applique la déduction d'un surplus sur les bobines NON coupées du plan (P1)
@@ -5010,6 +4990,17 @@ function updateCoupeeStatus(){
   const total=ficheLines.length;
   const done=ficheLines.filter(({id})=>document.getElementById(id)?.classList.contains('coupee')).length;
   const allDone=done===total;
+  // Détail par référence (multi-réf) : "FILM-A 1/2 · FILM-B 2/4"
+  const refs=[...new Set(ficheLines.map(l=>l.ref).filter(Boolean))];
+  let perRefStr='';
+  if(refs.length>1){
+    perRefStr=refs.map(r=>{
+      const lines=ficheLines.filter(l=>l.ref===r);
+      const d=lines.filter(({id})=>document.getElementById(id)?.classList.contains('coupee')).length;
+      const ok=d===lines.length;
+      return `<span style="color:${ok?'var(--green)':'var(--text)'}">${esc(r)} <strong>${d}/${lines.length}</strong></span>`;
+    }).join(' · ');
+  }
   const banner=document.getElementById('coupeeBanner');
   const sendBtn=document.getElementById('sendPlanBtn');
   const hint=document.getElementById('sendPlanHint');
@@ -5017,10 +5008,10 @@ function updateCoupeeStatus(){
     banner.style.display='block';
     if(allDone){
       banner.style.background='#14371f';banner.style.borderColor='var(--green)';banner.style.color='var(--green)';
-      banner.innerHTML=`✅ Toutes les bobines sont coupées (${total}/${total}) — prêt à confirmer`;
+      banner.innerHTML=`✅ Toutes les bobines sont coupées (${total}/${total}) — prêt à confirmer`+(perRefStr?`<div style="font-size:12px;font-weight:600;margin-top:6px">${perRefStr}</div>`:'');
     } else {
       banner.style.background='#1a1a18';banner.style.borderColor='var(--border2)';banner.style.color='var(--muted)';
-      banner.innerHTML=`✂ Progression : <strong style="color:var(--text)">${done}/${total}</strong> bobines coupées`;
+      banner.innerHTML=`✂ Progression : <strong style="color:var(--text)">${done}/${total}</strong> bobines coupées`+(perRefStr?`<div style="font-size:12px;font-weight:600;margin-top:6px">${perRefStr}</div>`:'');
     }
   }
   if(sendBtn){
