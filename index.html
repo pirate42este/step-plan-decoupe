@@ -1294,7 +1294,7 @@ const CLIENT_DATA = {
   "CORTIZO": [
     {ref:"41312799 - TacFlex® KX1045-1",largeur:2100,longueur:100},
     {ref:"41312809 - TacFlex® KX1045-1",largeur:2100,longueur:250},
-    {ref:"41319504 - TacFlex® KX1035",largeur:2100,longueur:500}
+    {ref:"41319504 - TacFlex® KX1045-1",largeur:2100,longueur:500}
   ],
   "Cougnaud": [
     {ref:"41319831 - TacFlex® DQ1009",largeur:2100,longueur:600},
@@ -1800,10 +1800,14 @@ function ficheRefList(f){
   if(f&&Array.isArray(f.refGroups)&&f.refGroups.length>1) return f.refGroups.map(g=>g.ref||'?');
   return [f&&f.ref?f.ref:'—'];
 }
-// La fiche est-elle couverte par un BL ?
-// Règle : un seul BL joint suffit pour valider (global, mono-réf ou multi-réf).
+// La fiche est-elle couverte par un BL ? (global OU toutes les réfs couvertes)
 function ficheBLComplete(f){
-  return ficheBLs(f).length>0;
+  const bls=ficheBLs(f);
+  if(bls.some(b=>b.ref==null)) return true;            // BL global
+  const refs=ficheRefList(f);
+  if(refs.length<=1) return bls.length>0;              // mono-réf : un BL suffit
+  const covered=new Set(bls.map(b=>b.ref));
+  return refs.every(r=>covered.has(r));                // multi : chaque réf couverte
 }
 
 // Dominique clique « joindre » : ref=null pour global, sinon la réf.
@@ -4359,7 +4363,11 @@ async function validateFiche(id){
   const f=fichesCache.find(x=>x._id===id);
   if(!f) return;
   if(!ficheBLComplete(f)){
-    alert('⛔ Validation impossible : aucun bon de livraison (BL) n\'est joint à cette fiche.\n\nJoins au moins un BL avant de valider.');
+    const refs=ficheRefList(f);
+    const msg=refs.length>1
+      ? '⛔ Validation impossible : il manque un bon de livraison.\n\nJoins soit un BL global (toute la commande), soit un BL pour chaque référence ('+refs.join(', ')+').'
+      : '⛔ Validation impossible : aucun bon de livraison (BL) n\'est joint à cette fiche.\n\nJoins le BL avant de valider.';
+    alert(msg);
     return;
   }
   const by=currentUser?(currentUser.nom||currentUser.ini):'?';
