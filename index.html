@@ -3221,6 +3221,34 @@ function recalcEcartsFromFiche(){
     else if(k>c) surplus[w]=k-c;
   });
 
+  // ====== DIAGNOSTIC TEMPORAIRE (à retirer après analyse) ======
+  // Affiche commande / coupé figé / reliquat + l'état de chaque bobine,
+  // pour comprendre pourquoi le reliquat ne se restitue pas.
+  {
+    const fmtMap=m=>{const e=Object.entries(m).filter(([,q])=>q>0);return e.length?e.map(([w,q])=>q+'×'+w).join(' + '):'(vide)';};
+    const lignes=ficheLines.map((l,i)=>{
+      const fz=isLineFrozen(l.id);
+      const coup=document.getElementById(l.id)?.classList.contains('coupee')?'coupée':'à couper';
+      const cur=(document.getElementById('flConf_'+l.id)?.value||'').replace(/x/gi,'×').trim();
+      const orig=(l.origConf||'').trim();
+      return `  Bob ${i+1} [${fz?'FIGÉE':'libre'} · ${coup}] config="${cur||'(vide)'}"`+(cur!==orig?` (origine "${orig||'(vide)'}")`:'');
+    }).join('\n');
+    alert(
+      '🔎 DIAGNOSTIC RECALCUL\n'+
+      '────────────────────\n'+
+      'Commande (onglet Plan) : '+fmtMap(command)+'\n'+
+      'Coupé figé (committed) : '+fmtMap(committed)+'\n'+
+      'RELIQUAT à recouper    : '+fmtMap(residual)+'\n'+
+      'Surplus (tracé)        : '+fmtMap(surplus)+'\n'+
+      '────────────────────\n'+
+      `Bobines : ${ficheLines.length} total · ${frozenSet.size} figées · ${ficheLines.length-frozenSet.size} libres (supprimées au recalcul)\n`+
+      lignes+'\n'+
+      '────────────────────\n'+
+      'Renvoie cette fenêtre à Este. (OK = le recalcul continue normalement)'
+    );
+  }
+  // ====== FIN DIAGNOSTIC TEMPORAIRE ======
+
   // Retour visuel immédiat : l'opérateur voit que le recalcul est lancé.
   const banner=document.getElementById('coupeeBanner');
   if(banner){
