@@ -1401,7 +1401,10 @@ const CLIENT_DATA = {
     {ref:"41312799 - TacFlex® KX1045-1",largeur:2100,longueur:100},
     {ref:"41312809 - TacFlex® KX1045-1",largeur:2100,longueur:250}
   ],
-  "FEILO SYLVANIA": [{ref:"41116850 - TacFlex® DH1006-2",largeur:2200,longueur:500}],
+  "FEILO SYLVANIA": [
+    {ref:"41116850 - TacFlex® DH1006-2",largeur:2200,longueur:500},
+    {ref:"TacFlex® DH1006-2 1000m",largeur:2200,longueur:1000}
+  ],
   "GAMPLAST": [{ref:"41315237 - TacFlex® DQ1041",largeur:2100,longueur:500}],
   "GK TECHNIQUES": [
     {ref:"41319832 - TacFlex® DQ1009",largeur:2100,longueur:600},
@@ -3916,10 +3919,19 @@ async function saveCommandeFiche(rows,useful,blade,opts){
   const numCmd=g('fNumCmd').value||g('planNumCmd').value||'—';
   const dateLivRaw=g('fDateLiv').value||g('planDateLiv').value;
   const dateLiv=dateLivRaw?new Date(dateLivRaw).toLocaleDateString('fr-FR'):'—';
-  // Perte globale : somme sur toutes les réfs (chacune sa laize)
+  // Perte globale STOCKÉE : on retire la chute de la DERNIÈRE bobine mère de
+  // chaque réf (= solde conservé pour stockage), sinon la perte% affichée dans
+  // Données est trop grande. Identique au calcul de la vue Plan (ligne ~2943).
   const totalMat=multi?computed.reduce((s,c)=>s+c.stats.totalMat,0):bobines.length*useful;
   const totalUsed=multi?computed.reduce((s,c)=>s+c.stats.totalUsed,0):bobines.reduce((s,p)=>s+calcStats(p,blade).total,0);
-  const pct=totalMat>0?((totalMat-totalUsed)/totalMat*100):0;
+  let chuteStockMm=0;
+  computed.forEach(c=>{
+    const pg=c.planGroups||[];
+    if(!pg.length) return;
+    const last=pg[pg.length-1];
+    chuteStockMm+=Math.max(0,c.useful-calcStats(last.pattern,c.blade).total); // 1 solde par réf
+  });
+  const pct=totalMat>0?(Math.max(0,totalMat-totalUsed-chuteStockMm)/totalMat*100):0;
   const tempsStr=chronoSec>0
     ?`${fmtTimeFr(chronoSec)} (${ini} — ${today()})`
     :(()=>{const m=tempsCache.find(t=>t.client===client && t.ref===ref);return m?`${fmtTimeFr(m.duree)} (${m.operateur} — ${new Date(m.date).toLocaleDateString('fr-FR')})`:'non enregistré';})();
