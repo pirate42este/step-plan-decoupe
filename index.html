@@ -489,6 +489,11 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
         <input type="text" id="fBlade" inputmode="decimal" oninput="syncFicheParams('blade')">
       </div>
     </div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn btn-blue" style="flex:1" onclick="applyFichePlanChange()">🔄 Changement plan</button>
+      <button class="btn btn-ghost" style="flex:1" onclick="printFichePlan()">🖨️ Imprimer le plan</button>
+    </div>
+    <div id="fPlanHint" style="font-size:12px;margin-top:6px;color:var(--orange)">⚠ Renseigne les 4 champs machine puis clique « Changement plan » avant de démarrer le chrono.</div>
   </div>
 
   <div class="section">
@@ -516,7 +521,7 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
     <div class="row2">
       <div class="field">
         <label>Lame N°</label>
-        <input type="text" id="fNumLame" placeholder="ex : L-12" inputmode="text">
+        <input type="text" id="fNumLame" placeholder="ex : L-12" inputmode="text" oninput="invalidateFichePlan()">
       </div>
       <div class="field">
         <label>N° Jour</label>
@@ -1698,6 +1703,10 @@ let chronoSec = 0;
 let chronoRunning = false;
 let chronoInterval = null;
 let chronoStartTs = null;
+// Vrai une fois que l'opérateur a cliqué « Changement plan » avec les 4 params machine
+// remplis. Toute modif d'un param (mère/bords/lame/n° lame) le repasse à false :
+// le chrono reste bloqué tant que le plan n'a pas été (re)validé.
+let fichePlanValidated = false;
 
 const DEFAULT_ROWS = [
   {width:50,qty:400},{width:60,qty:150},{width:65,qty:50},{width:70,qty:198},{width:80,qty:150}
@@ -2201,6 +2210,7 @@ function importPlanToFiche(opts){
     });
     refreshOp2BobineList();
     refreshEtiquetteSolde();
+    invalidateFichePlan(); // nouvelle fiche : plan à (re)valider avant chrono
 
     if(!auto){
       showPage(1);
@@ -3539,10 +3549,14 @@ function chronoTick(){
 }
 function chronoStart(){
   if(chronoRunning) return;
-  const lame=document.getElementById('fNumLame');
-  if(!lame||!lame.value.trim()){
-    alert('⚠ Renseigne le n° de lame avant de démarrer le chronomètre.');
-    if(lame) lame.focus();
+  const miss=ficheParamMissing();
+  if(miss){
+    alert('⚠ Renseigne '+miss.label+' avant de démarrer le chronomètre.');
+    document.getElementById(miss.id)?.focus();
+    return;
+  }
+  if(!fichePlanValidated){
+    alert('⚠ Clique sur « Changement plan » pour valider le plan de découpe avant de démarrer le chronomètre.');
     return;
   }
   chronoRunning=true;
@@ -5612,6 +5626,66 @@ function syncFicheParams(which){
   const fEl=document.getElementById(fId[which]);
   if(planEl&&fEl){ planEl.value=fEl.value; }
   recalcPlan();
+  invalidateFichePlan();
+}
+// Repasse le plan en « non validé » : le chrono se reverrouille tant que
+// l'opérateur n'a pas recliqué « Changement plan ».
+function invalidateFichePlan(){
+  fichePlanValidated=false;
+  updateFPlanHint();
+}
+// Met à jour le message d'aide sous les boutons machine.
+function updateFPlanHint(){
+  const h=document.getElementById('fPlanHint'); if(!h) return;
+  if(fichePlanValidated){
+    h.textContent='✓ Plan validé — tu peux démarrer le chrono.';
+    h.style.color='var(--green)';
+  }else{
+    h.textContent='⚠ Renseigne les 4 champs machine puis clique « Changement plan » avant de démarrer le chrono.';
+    h.style.color='var(--orange)';
+  }
+}
+// Vérifie que les 4 champs machine sont remplis. Retourne le 1er manquant ou null.
+function ficheParamMissing(){
+  const checks=[['fNumLame','le n° de lame'],['fBlade','la perte lame (mm)'],
+                ['fMother','la bobine mère (mm)'],['fEdge','la perte bords (mm)']];
+  for(const [id,label] of checks){
+    const el=document.getElementById(id);
+    if(!el || !el.value.trim()) return {id,label};
+  }
+  return null;
+}
+// Bouton « Changement plan » : recalcule le plan de découpe de la fiche avec les
+// valeurs machine réelles saisies par l'opérateur, puis régénère les bobines.
+// Bloqué si le découpage a déjà commencé (protège le travail terrain).
+function applyFichePlanChange(){
+  if(!isFicheUntouched()){
+    alert('⚠ Le découpage a déjà commencé sur cette fiche.\n\nImpossible de recalculer le plan : cela effacerait le travail en cours.');
+    return;
+  }
+  const miss=ficheParamMissing();
+  if(miss){
+    alert('⚠ Renseigne '+miss.label+' avant de recalculer le plan.');
+    document.getElementById(miss.id)?.focus();
+    return;
+  }
+  // Propage mère/bords/lame vers le plan + recalcule (syncFicheParams remet le flag à false)
+  syncFicheParams('mother'); syncFicheParams('edge'); syncFicheParams('blade');
+  // Régénère les bobines de la fiche depuis le plan recalculé (fiche untouched ⇒ pas de confirm)
+  importPlanToFiche({});
+  fichePlanValidated=true;
+  updateFPlanHint();
+  showToast('✓ Plan de découpe recalculé — '+ficheLines.length+' bobine(s)','ok');
+}
+// Bouton « Imprimer le plan » : imprime le plan complet recalculé avec les
+// valeurs machine réelles de la fiche (n'affecte ni les bobines ni le verrou chrono).
+function printFichePlan(){
+  [['fMother','motherWidth'],['fEdge','edgeLoss'],['fBlade','bladeWidth']].forEach(([f,p])=>{
+    const fe=document.getElementById(f), pe=document.getElementById(p);
+    if(fe&&pe) pe.value=fe.value;
+  });
+  recalcPlan();
+  printPlan();
 }
 // Recopie les champs plan -> champs fiche (affichage à jour à l'ouverture de la fiche).
 function refreshFicheParams(){
