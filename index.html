@@ -489,6 +489,10 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
         <input type="text" id="fBlade" inputmode="decimal" oninput="syncFicheParams('blade')">
       </div>
     </div>
+    <div style="margin-top:12px">
+      <button class="btn btn-orange btn-sm" onclick="addChuteReel()" title="Ajouter une chute du stock à utiliser dans le plan">✂ Chute — utiliser une chute du stock</button>
+      <div id="ficheChutesList" style="margin-top:8px"></div>
+    </div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button class="btn btn-blue" style="flex:1" onclick="applyFichePlanChange()">🔄 Changement plan</button>
       <button class="btn btn-ghost" style="flex:1" onclick="printFichePlan()">🖨️ Imprimer le plan</button>
@@ -1684,6 +1688,10 @@ function csvCell(v){
 let currentMachine = 'feba';
 let ficheMachine = 'feba';
 let ficheMachine2 = ''; // machine de l'opérateur 2 (si différente)
+// Chutes du stock à utiliser dans le plan : [{width, ref}]. Consommées en
+// priorité au « Changement plan ». La longueur est supposée suffisante (comme
+// les bobines mères) : seule la largeur limite le nombre de laizes.
+let ficheChutes = [];
 let selectedIni = '';
 let selectedIni2 = '';
 let planGroups = [];
@@ -2209,14 +2217,42 @@ function importPlanToFiche(opts){
     let bi=1;
     computed.forEach((c,ci)=>{
       if(multi) insertFicheRefSeparator(c.ref||('Référence '+(ci+1)), c.useful, c.longueur);
-      c.planGroups.forEach(g=>{
-        for(let k=0;k<g.count;k++){
-          const lbl=(multi&&c.ref?c.ref+' · ':'')+'BOB-'+String(bi).padStart(3,'0');
-          addFicheLine({label:lbl, conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + '),
-            ref:c.ref||'', useful:c.useful, blade:c.blade});
-          bi++;
-        }
-      });
+      const myChutes=(ficheChutes||[]).filter(ch=>(ch.ref||'')===(c.ref||''));
+      if(myChutes.length){
+        // (#2) Consommer d'abord les chutes du stock (1 bobine par chute, laize
+        // utile = largeur chute − perte bords), puis recalculer le reste sur les
+        // bobines mères pleines. Algo de packing inchangé : couche d'allocation.
+        const counts=buildCounts(expandDemand(c.rows.filter(r=>r.width<=c.useful)));
+        myChutes.forEach(ch=>{
+          const usefulC=Math.max(0,(ch.width||0)-(c.edge||0));
+          if(usefulC<=0) return;
+          const pat=bestPattern(counts,usefulC,c.blade);
+          if(!pat||!pat.length) return;
+          pat.forEach(p=>{counts[p.width]=(counts[p.width]||0)-p.qty; if(counts[p.width]<=0) delete counts[p.width];});
+          addFicheLine({label:(multi&&c.ref?c.ref+' · ':'')+'CHUTE '+fmt(ch.width),
+            conf:pat.map(p=>p.qty+'×'+p.width).join(' + '),
+            ref:c.ref||'', useful:usefulC, blade:c.blade});
+        });
+        const remain=[]; Object.entries(counts).forEach(([w,q])=>{for(let i=0;i<q;i++) remain.push(Number(w));});
+        const groups=groupBobines(pack(remain.sort((a,b)=>b-a),c.useful,c.blade),c.blade);
+        groups.forEach(g=>{
+          for(let k=0;k<g.count;k++){
+            addFicheLine({label:(multi&&c.ref?c.ref+' · ':'')+'BOB-'+String(bi).padStart(3,'0'),
+              conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + '),
+              ref:c.ref||'', useful:c.useful, blade:c.blade});
+            bi++;
+          }
+        });
+      }else{
+        c.planGroups.forEach(g=>{
+          for(let k=0;k<g.count;k++){
+            const lbl=(multi&&c.ref?c.ref+' · ':'')+'BOB-'+String(bi).padStart(3,'0');
+            addFicheLine({label:lbl, conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + '),
+              ref:c.ref||'', useful:c.useful, blade:c.blade});
+            bi++;
+          }
+        });
+      }
     });
     refreshOp2BobineList();
     refreshEtiquetteSolde();
@@ -2269,8 +2305,10 @@ function selectMachine(m){
   document.getElementById('btnMaveg').className='machine-btn'+(m==='maveg'?' sel-maveg':'');
   document.getElementById('btnCevenini').className='machine-btn'+(m==='cevenini'?' sel-cevenini':'');
   const def=MACHINE_DEFAULTS[m]||MACHINE_DEFAULTS.feba;
-  document.getElementById('bladeWidth').value=def.blade;
-  document.getElementById('edgeLoss').value=def.edge;
+  // Appliquer les défauts (perte bords / lame) à TOUTES les références du plan,
+  // pas seulement la réf 1 (les blocs réf utilisent tous data-rb="edge"/"blade").
+  document.querySelectorAll('#refBlocks [data-rb="edge"]').forEach(el=>{el.value=def.edge;});
+  document.querySelectorAll('#refBlocks [data-rb="blade"]').forEach(el=>{el.value=def.blade;});
   selectFicheMachine(m);
   onParamChange();
 }
@@ -2453,6 +2491,11 @@ function addRefBlock(){
       <button class="btn btn-ghost btn-sm" onclick="addOrderRowTo(this)">+ Ajouter une ligne</button>
     </div>`;
   document.getElementById('refBlocks').appendChild(block);
+  // Le nouveau bloc hérite des défauts perte bords/lame de la machine courante
+  // (FEBA 10/5, MAVEG & CEVENINI 20/0), pas des valeurs en dur du gabarit.
+  const def=MACHINE_DEFAULTS[currentMachine]||MACHINE_DEFAULTS.feba;
+  const eEl=block.querySelector('[data-rb="edge"]'); if(eEl) eEl.value=def.edge;
+  const bEl=block.querySelector('[data-rb="blade"]'); if(bEl) bEl.value=def.blade;
   // 2 lignes vides par défaut sur le nouveau bloc
   const cont=block.querySelector('.rb-rows');
   cont.appendChild(makeOrderRow());cont.appendChild(makeOrderRow());
@@ -4062,6 +4105,7 @@ function resetAll(){
   // Reset Fiche
   document.getElementById('ficheLines').innerHTML='';
   ficheLines=[];
+  ficheChutes=[]; if(typeof renderFicheChutes==='function') renderFicheChutes();
   Object.keys(ficholinePhotos).forEach(function(k){delete ficholinePhotos[k];});
   commandePhoto='';commandeFiles=[];refreshCommandePhotoZone();loadedSaveId=null;editingSaveId=null;
   if(typeof updateSaveBtnLabel==='function') updateSaveBtnLabel();
@@ -5210,7 +5254,7 @@ function showFicheDetail(id,autoPrint){
       }
       const coupeeTag=fd&&fd.coupee?'<span style="color:#4ade80;font-weight:700">✓ Coupée</span>':'<span style="color:#888">— À couper</span>';
       const actionTag=fd?(fd.actDechet?'<span style="color:#f87171">🗑 Déchet</span>':fd.actChutes?'<span style="color:#f59e0b">✂ Chutes</span>':''):'';
-      const test2=fd?(fd.test2nc?('<span style="color:#f87171;font-weight:700">⚠ Non conforme</span>'+((fd.devi||fd.droit)?' <span style="color:#f59e0b;font-size:11px">('+[fd.devi?'Dévidage':'',fd.droit?'Droit':''].filter(Boolean).join(', ')+')</span>':'')):(fd.devi&&fd.droit?'<span style="color:#4ade80">✓ Conforme</span>':'<span style="color:#888">— Non testé</span>')):'';
+      const test2=fd?(fd.test2nc?('<span style="color:#f87171;font-weight:700">⚠ Non conforme</span>'+((fd.devi||fd.droit)?' <span style="color:#f59e0b;font-size:11px">('+[fd.devi?'Dévidage':'',fd.droit?'Droit':''].filter(Boolean).join(', ')+')</span>':'')):((fd.conforme!=null?fd.conforme:(fd.devi&&fd.droit))?'<span style="color:#4ade80">✓ Conforme</span>':'<span style="color:#888">— Non testé</span>')):'';
       const ncDetail=fd&&fd.ncDetail?`<div style="margin-top:4px;font-size:12px;color:#f59e0b;font-style:italic">📝 ${esc(fd.ncDetail)}</div>`:'';
       const photoCell=fd&&fd.photo?`<a href="${fd.photo}" target="_blank"><img src="${fd.photo}" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid #444;cursor:pointer"></a>`:'<span style="color:#555">—</span>';
       const etiq=fd&&fd.label?`<span style="color:#60a5fa">${esc(fd.label)}</span>`:'';
@@ -5244,7 +5288,7 @@ function showFicheDetail(id,autoPrint){
       :'<span style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:11px;font-weight:700;background:#14371f;color:#4ade80">✓ RAS</span>';
     const coupeeTag=fd.coupee?'<span style="color:#4ade80;font-weight:700">✓ Coupée</span>':'<span style="color:#888">— À couper</span>';
     const actionTag=fd.actDechet?'<span style="color:#f87171">🗑 Déchet</span>':fd.actChutes?'<span style="color:#f59e0b">✂ Chutes</span>':'';
-    const test2=fd.test2nc?('<span style="color:#f87171;font-weight:700">⚠ Non conforme</span>'+((fd.devi||fd.droit)?' <span style="color:#f59e0b;font-size:11px">('+[fd.devi?'Dévidage':'',fd.droit?'Droit':''].filter(Boolean).join(', ')+')</span>':'')):(fd.devi&&fd.droit?'<span style="color:#4ade80">✓ Conforme</span>':'<span style="color:#888">— Non testé</span>');
+    const test2=fd.test2nc?('<span style="color:#f87171;font-weight:700">⚠ Non conforme</span>'+((fd.devi||fd.droit)?' <span style="color:#f59e0b;font-size:11px">('+[fd.devi?'Dévidage':'',fd.droit?'Droit':''].filter(Boolean).join(', ')+')</span>':'')):((fd.conforme!=null?fd.conforme:(fd.devi&&fd.droit))?'<span style="color:#4ade80">✓ Conforme</span>':'<span style="color:#888">— Non testé</span>');
     const ncDetail=fd.ncDetail?`<div style="margin-top:4px;font-size:12px;color:#f59e0b;font-style:italic">📝 ${esc(fd.ncDetail)}</div>`:'';
     const photoCell=fd.photo?`<a href="${fd.photo}" target="_blank"><img src="${fd.photo}" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid #444;cursor:pointer"></a>`:'<span style="color:#555">—</span>';
     const etiq=fd.label?`<span style="color:#f59e0b">${esc(fd.label)}</span>`:'';
@@ -5268,6 +5312,8 @@ function showFicheDetail(id,autoPrint){
     </div>`:'';
 
   const op2Line=f.ini2?`<span>Opérateur 2</span><span>${f.ini2}${f.op2Bob?` — repris dès la bobine ${f.op2Bob}`:''}</span>`:'';
+  const machLbl=getMachineLabel(f.machine||'');
+  const machCol={'FEBA':'#60a5fa','MAVEG':'#4ade80','CEVENINI':'#a78bfa'}[machLbl]||'#a78bfa';
   const cartonStr=cartonRatioStr(f);
   const pkgLine=`<span>Packaging</span><span>Palette ${f.palette||'—'} · Type ${f.typeCond||f.carton||'—'}${cartonStr?` · ${esc(cartonStr)}`:''} · Étiquetage ${f.etiquetage||f.etiquette||'—'} · Cerclage ${f.cerclage||'—'}</span>`;
   const notesLine=(f.notesEmballage&&f.notesEmballage.trim())?`<span>Notes condit.</span><span style="white-space:pre-line">${esc(f.notesEmballage)}</span>`:'';
@@ -5295,7 +5341,8 @@ function showFicheDetail(id,autoPrint){
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px">
     <div>
       <h1>${f.name}</h1>
-      <div class="sub">${new Date(f.date).toLocaleString('fr-FR')} · ${f.machine} · ${f.totalBobines} bobines · perte <span class="badge-pct">${f.pct}%</span></div>
+      <div style="display:inline-block;margin:8px 0 4px;padding:5px 16px;border-radius:9px;font-size:24px;font-weight:800;letter-spacing:1px;color:#fff;background:${machCol}">⚙ ${machLbl}</div>
+      <div class="sub">${new Date(f.date).toLocaleString('fr-FR')} · ${f.totalBobines} bobines · perte <span class="badge-pct">${f.pct}%</span></div>
       ${(()=>{const pc=computePerteChute(f);return `<div class="sub" style="margin-top:4px">🗑 Perte (déchet) : <b style="color:#f87171">${fmt(pc.perteMm)} mm</b> · ✂ Chute pour stockage : <b style="color:#f59e0b">${fmt(pc.chuteStockMm)} mm</b></div>`;})()}
     </div>
     <button onclick="window.print()" style="padding:8px 16px;border-radius:8px;border:1px solid #444;background:#222;color:#e5e5e3;font-size:13px;cursor:pointer">🖨 Imprimer</button>
@@ -5649,14 +5696,16 @@ function selectFicheMachine(m){
   // gardant la bobine mère du plan. Ne rappelle pas selectMachine (anti-boucle).
   const def=MACHINE_DEFAULTS[m];
   if(def){
-    const e=document.getElementById('edgeLoss'); if(e) e.value=def.edge;
-    const b=document.getElementById('bladeWidth'); if(b) b.value=def.blade;
+    // Appliquer bords/lame à TOUTES les références (pas seulement la réf 1).
+    document.querySelectorAll('#refBlocks [data-rb="edge"]').forEach(el=>{el.value=def.edge;});
+    document.querySelectorAll('#refBlocks [data-rb="blade"]').forEach(el=>{el.value=def.blade;});
     currentMachine=m;
     document.getElementById('btnFeba').className='machine-btn'+(m==='feba'?' sel-feba':'');
     document.getElementById('btnMaveg').className='machine-btn'+(m==='maveg'?' sel-maveg':'');
     document.getElementById('btnCevenini').className='machine-btn'+(m==='cevenini'?' sel-cevenini':'');
     if(typeof recalcPlan==='function') recalcPlan();
   }
+  if(typeof refreshAllTest2==='function') refreshAllTest2();
   refreshFicheParams();
 }
 // Recopie les champs fiche (bobine mère / perte bords / lame) -> champs plan,
@@ -5718,6 +5767,45 @@ function applyFichePlanChange(){
   fichePlanValidated=true;
   updateFPlanHint();
   showToast('✓ Plan de découpe recalculé — '+ficheLines.length+' bobine(s)','ok');
+}
+// ---- Chutes du stock à intégrer au plan (#2) ----
+function addChuteReel(){
+  const groups=(typeof getRefGroups==='function'?getRefGroups():[]).filter(g=>(g.rows||[]).length);
+  let ref='';
+  if(groups.length>1){
+    const list=groups.map((g,i)=>(i+1)+') '+(g.ref||('Référence '+(i+1)))).join('\n');
+    const sel=prompt('Cette chute concerne quelle référence ?\n'+list+'\n\nTape le numéro :','1');
+    if(sel===null) return;
+    const idx=parseInt(sel,10)-1;
+    if(isNaN(idx)||idx<0||idx>=groups.length){ alert('Numéro de référence invalide.'); return; }
+    ref=groups[idx].ref||'';
+  }else if(groups.length===1){
+    ref=groups[0].ref||'';
+  }
+  const wRaw=prompt('Largeur de la chute à utiliser (mm) :','');
+  if(wRaw===null) return;
+  const w=parseNum(wRaw);
+  if(!(w>0)){ alert('Largeur invalide.'); return; }
+  ficheChutes.push({width:w, ref});
+  renderFicheChutes();
+  invalidateFichePlan(); // force un nouveau « Changement plan »
+  showToast('✂ Chute '+fmt(w)+' mm ajoutée — clique « Changement plan »','ok');
+}
+function removeChuteReel(i){
+  ficheChutes.splice(i,1);
+  renderFicheChutes();
+  invalidateFichePlan();
+}
+function renderFicheChutes(){
+  const el=document.getElementById('ficheChutesList'); if(!el) return;
+  if(!ficheChutes.length){ el.innerHTML=''; return; }
+  const multi=(typeof getRefGroups==='function'?getRefGroups():[]).filter(g=>(g.rows||[]).length).length>1;
+  el.innerHTML='<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Chutes à utiliser (consommées en priorité au « Changement plan ») :</div>'+
+    ficheChutes.map((c,i)=>`<div style="display:flex;align-items:center;gap:8px;background:rgba(245,158,11,0.08);border:1px solid #7a6010;border-radius:6px;padding:6px 10px;margin-bottom:4px;font-size:13px">
+        <span style="color:var(--orange);font-weight:700">✂ ${fmt(c.width)} mm</span>
+        ${multi&&c.ref?`<span style="color:var(--muted)">· ${esc(c.ref)}</span>`:''}
+        <button onclick="removeChuteReel(${i})" title="Retirer" style="margin-left:auto;background:none;border:none;color:var(--red);cursor:pointer;font-size:14px">🗑</button>
+      </div>`).join('');
 }
 // Bouton « Imprimer le plan » : imprime le plan complet recalculé avec les
 // valeurs machine réelles de la fiche (n'affecte ni les bobines ni le verrou chrono).
@@ -5833,7 +5921,7 @@ function addFicheLine(data){
         <div class="test2-block">
           <div class="test2-main">
             <input type="checkbox" id="flTest2main_${id}" disabled>
-            <span>Conforme — auto si Dévidage ET Droit cochés ci-dessous</span>
+            <span id="test2desc_${id}">Conforme — auto si Dévidage ET Droit cochés ci-dessous</span>
           </div>
           <label class="test2-nc" id="test2nc_${id}">
             <input type="checkbox" id="flTest2nc_${id}" onchange="updateTest2Subs('${id}')"> ⚠ Non conforme — coche le ou les défauts ci-dessous
@@ -5873,6 +5961,7 @@ function addFicheLine(data){
     </div>`;
   document.getElementById('ficheLines').appendChild(div);
   refreshPhotoZone(id);
+  updateTest2Subs(id);
   updateAllCumuls();
   updateCoupeeStatus();
   refreshOp2BobineList();
@@ -5892,6 +5981,12 @@ function renumberFicheLines(){
   });
 }
 function removeFicheLine(id){
+  // Garde-fou : suppression d'une bobine mère = perte de la saisie associée
+  // (config, photo, test, NC). On demande confirmation.
+  const lbl=(document.getElementById('flLabel_'+id)?.value||'').trim();
+  const conf=(document.getElementById('flConf_'+id)?.value||'').trim();
+  const desc=lbl?('« '+lbl+' »'):(conf?('('+conf+')'):'');
+  if(!confirm('Supprimer cette bobine mère '+desc+' du plan de découpe ?\n\nCette action retire la bobine et sa saisie (config, photo, test, NC) de la fiche.')) return;
   document.getElementById(id)?.remove();
   ficheLines=ficheLines.filter(l=>l.id!==id);
   delete ficholinePhotos[id];
@@ -5925,10 +6020,11 @@ function toggleCoupee(id){
     // OU Non conforme avec au moins un motif (Dévidage ou Droit).
     if(!test2Resolved(id)){
       const elNC=document.getElementById('flTest2nc_'+id);
+      const feba=(ficheMachine==='feba');
       if(elNC&&elNC.checked){
-        alert('⚠ Non conforme coché mais aucun motif sélectionné.\n\nCoche au moins ↔ Dévidage ou ➡ Droit avant de valider "Coupée".');
+        alert('⚠ Non conforme coché mais aucun motif sélectionné.\n\nCoche '+(feba?'↔ Dévidage':'au moins ↔ Dévidage ou ➡ Droit')+' avant de valider "Coupée".');
       }else{
-        alert('⚠ Test 2ème bobineaux non validé.\n\nCoche Dévidage ET Droit (conforme), ou coche ⚠ Non conforme avec un motif, avant de valider "Coupée".');
+        alert('⚠ Test 2ème bobineaux non validé.\n\n'+(feba?'Coche ↔ Dévidage (conforme)':'Coche Dévidage ET Droit (conforme)')+', ou coche ⚠ Non conforme avec un motif, avant de valider "Coupée".');
       }
       return;
     }
@@ -5996,13 +6092,20 @@ function updateTest2Subs(id){
   const elNC=document.getElementById('flTest2nc_'+id);
   const mainCb=document.getElementById('flTest2main_'+id);
   if(!elDevi||!elDroit||!mainCb) return;
+  // FEBA : pas d'angle de coupe -> le critère « Droit » ne s'applique pas.
+  // On masque « ➡ Droit » et la conformité ne dépend que de « Dévidage ».
+  const feba=(ficheMachine==='feba');
+  const droitSub=document.getElementById('sub_droit_'+id);
+  if(droitSub) droitSub.style.display=feba?'none':'';
+  const desc=document.getElementById('test2desc_'+id);
+  if(desc) desc.textContent=feba?'Conforme — auto si Dévidage coché ci-dessous':'Conforme — auto si Dévidage ET Droit cochés ci-dessous';
   const ncMode=elNC&&elNC.checked;
   // En mode Non conforme, la case Conforme auto ne peut pas être cochée.
   if(ncMode){
     mainCb.checked=false;
     mainCb.parentElement.style.color='var(--muted)';
   }else{
-    const both=elDevi.checked&&elDroit.checked;
+    const both=feba?elDevi.checked:(elDevi.checked&&elDroit.checked);
     mainCb.checked=both;
     mainCb.parentElement.style.color=both?'var(--green)':'var(--muted)';
   }
@@ -6015,18 +6118,23 @@ function updateTest2Subs(id){
   if(line) line.classList.toggle('test2-nc-flag',ncMode);
   updateCoupeeStatus();
 }
+// Réapplique la règle FEBA (masquage « Droit » + conformité) sur toutes les bobines.
+function refreshAllTest2(){
+  (ficheLines||[]).forEach(l=>updateTest2Subs(l.id));
+}
 // Vrai si le test 2ème bobineaux est tranché (donc Coupée autorisée côté test).
 function test2Resolved(id){
   const elDevi=document.getElementById('flDevi_'+id);
   const elDroit=document.getElementById('flDroit_'+id);
   const elNC=document.getElementById('flTest2nc_'+id);
   if(!elDevi||!elDroit) return true; // pas de bloc test = pas de gating
+  const feba=(ficheMachine==='feba'); // FEBA : pas d'angle -> « Droit » ignoré
   if(elNC&&elNC.checked){
-    // Non conforme : au moins un motif requis.
-    return elDevi.checked||elDroit.checked;
+    // Non conforme : au moins un motif requis (en FEBA, seul Dévidage existe).
+    return feba?elDevi.checked:(elDevi.checked||elDroit.checked);
   }
-  // Conforme : les deux requis.
-  return elDevi.checked&&elDroit.checked;
+  // Conforme : Dévidage ET Droit (en FEBA, Dévidage seul).
+  return feba?elDevi.checked:(elDevi.checked&&elDroit.checked);
 }
 function updateNC(id){
   const rasEl=document.getElementById('nc_ras_'+id);
@@ -6106,6 +6214,7 @@ function serializeFicheState(){
       lame:g('fNumLame')?.value||'',numJour:g('fNumJour')?.value||'',longueur:g('fLongueur')?.value||'',client:g('fClient')?.value||'',ref:g('fRef')?.value||'',
       numCmd:g('fNumCmd')?.value||'',dateLiv:g('fDateLiv')?.value||'',type:g('fType')?.value||'',palette:g('fPalette')?.value||'',etiquetage:g('fEtiquetage')?.value||'',cerclage:g('fCerclage')?.value||'',notes:g('fNotesEmballage')?.value||''},
     chrono:{sec:chronoSec, startTs:chronoStartTs, wasRunning:chronoRunning},
+    chutes:(ficheChutes||[]).slice(),
     lines:getFicheLinesData()
   };
 }
@@ -6221,6 +6330,7 @@ function restoreFicheState(st){
   if(g('fOp2DiffMachine')){g('fOp2DiffMachine').checked=!!st.fiche.op2DiffMachine;ficheMachine2=st.fiche.machine2||'';toggleOp2Machine();if(ficheMachine2)selectFicheMachine2(ficheMachine2);const sv=(id,v)=>{const el=g(id);if(el)el.value=v||'';};sv('fMother2',st.fiche.mother2);sv('fEdge2',st.fiche.edge2);sv('fBlade2',st.fiche.blade2);updateUtile2();}
   document.getElementById('ficheLines').innerHTML='';ficheLines=[];
   Object.keys(ficholinePhotos).forEach(k=>delete ficholinePhotos[k]);
+  ficheChutes=Array.isArray(st.chutes)?st.chutes.slice():[]; renderFicheChutes();
   (st.lines||[]).forEach(restoreFicheLineFromData);
   updateAllCumuls();updateCoupeeStatus();refreshOp2BobineList();renumberFicheLines();
   // Reprise du chrono à la valeur où le brouillon a été créé (remis en pause).
@@ -6288,7 +6398,8 @@ function printFiche(){
     const conf=(document.getElementById('flConf_'+l.id)?.value||'').replace(/x/gi,'×');
     const devi=document.getElementById('flDevi_'+l.id)?.checked;
     const droit=document.getElementById('flDroit_'+l.id)?.checked;
-    const test2=devi&&droit?'✓':((devi?'Dév.':'')+(droit?'Droit':''))||'';
+    const conf2=(ficheMachine==='feba')?devi:(devi&&droit);
+    const test2=conf2?'✓':((devi?'Dév.':'')+(droit?'Droit':''))||'';
     const cumEl=document.getElementById('flCumul_'+l.id);
     const cumText=cumEl?cumEl.innerText.trim().replace(/\n+/g,', '):'—';
     const nc=['larg','qty','casse','ang'].filter(k=>document.getElementById('nc_'+k+'_'+l.id)?.querySelector('input')?.checked);
