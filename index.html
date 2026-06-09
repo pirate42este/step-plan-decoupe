@@ -3474,6 +3474,8 @@ function renderSaves(){
     const d=new Date(s.date);
     const ds=d.toLocaleDateString('fr-FR')+' '+d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
     const mn=getMachineLabel(s.machine);
+    const machCol={'FEBA':'#60a5fa','MAVEG':'#4ade80','CEVENINI':'#a78bfa'}[mn]||'#a78bfa';
+    const machBadge=mn?`<div style="margin-top:6px"><span style="display:inline-block;padding:3px 12px;border-radius:7px;font-size:15px;font-weight:800;letter-spacing:.5px;color:#fff;background:${machCol}">⚙ ${esc(mn)}</span></div>`:'';
     const cmdDetail=s.commandeDetail||(s.rows||[]).map(function(r){return r.qty+'×'+r.width+'mm';}).join(' + ')||'';
     const pkg=[s.typeCond||s.carton,s.palette,s.etiquetage||s.etiquette,s.cerclage].filter(Boolean).join(' · ');
     const pkgLine=pkg?`<div class="save-meta">📦 ${pkg}</div>`:'';
@@ -3491,8 +3493,9 @@ function renderSaves(){
     return `<div class="save-card">
       <div class="save-info">
         ${titleHtml}
+        ${machBadge}
         ${cmdLine}
-        <div class="save-meta">${ds} · ${mn} · Bobine ${s.mother} mm</div>
+        <div class="save-meta">${ds} · Bobine ${s.mother} mm</div>
         ${cmdDetailHtml}
         ${pkgLine}
         ${filesLine}
