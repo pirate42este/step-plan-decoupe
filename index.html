@@ -867,6 +867,7 @@ var storage=null;
 var savesCache=[];
 var tempsCache=[];
 var fichesCache=[];
+var corbeilleCache=[]; // déclaré explicitement (était une globale implicite : risque de crash si lu avant le 1er loadCorbeille)
 var showValidatedFiches=false;
 
 try{
@@ -6020,7 +6021,8 @@ function autosaveDraftTick(){
 }
 function startAutosave(){
   if(_autosaveTimer) return;
-  _autosaveTimer=setInterval(autosaveDraftTick,60000);
+  autosaveDraftTick();                 // capture immédiate de l'état au démarrage
+  _autosaveTimer=setInterval(autosaveDraftTick,15000);
 }
 function stopAutosave(){
   if(_autosaveTimer){clearInterval(_autosaveTimer);_autosaveTimer=null;}
