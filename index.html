@@ -1703,6 +1703,13 @@ let chronoSec = 0;
 let chronoRunning = false;
 let chronoInterval = null;
 let chronoStartTs = null;
+// Horodatage (ms) du début du segment EN COURS. Le temps écoulé est recalculé
+// depuis cet instant (Date.now()-chronoRunStart) au lieu d'incrémenter un compteur :
+// ainsi le chrono ne "fige" pas quand le téléphone se met en veille et suspend
+// l'intervalle JS — au réveil il affiche directement le vrai temps écoulé.
+// Astuce "start virtuel" : chronoRunStart = maintenant - tempsDéjàÉcoulé, donc
+// (now - chronoRunStart) = total cumulé, pauses comprises.
+let chronoRunStart = null;
 // Vrai une fois que l'opérateur a cliqué « Changement plan » avec les 4 params machine
 // remplis. Toute modif d'un param (mère/bords/lame/n° lame) le repasse à false :
 // le chrono reste bloqué tant que le plan n'a pas été (re)validé.
@@ -3544,7 +3551,9 @@ async function deleteSave(id){
 // CHRONO
 // ============================================================
 function chronoTick(){
-  chronoSec++;
+  // Recalcul depuis l'horodatage : robuste à la veille/throttling du téléphone.
+  if(chronoRunStart==null) return;
+  chronoSec=Math.max(0,Math.floor((Date.now()-chronoRunStart)/1000));
   document.getElementById('chronoDisplay').textContent=fmtTime(chronoSec);
 }
 function chronoStart(){
@@ -3561,7 +3570,10 @@ function chronoStart(){
   }
   chronoRunning=true;
   chronoStartTs=chronoStartTs||new Date().toISOString();
+  // Start virtuel : on retranche le temps déjà cumulé (cas reprise après pause).
+  chronoRunStart=Date.now()-chronoSec*1000;
   chronoInterval=setInterval(chronoTick,1000);
+  chronoTick();
   document.getElementById('chronoDisplay').className='chrono-display running';
   document.getElementById('chronoStartBtn').classList.add('hidden');
   document.getElementById('chronoPauseBtn').classList.remove('hidden');
@@ -3570,6 +3582,9 @@ function chronoStart(){
 }
 function chronoPause(){
   if(!chronoRunning) return;
+  // Figer le cumul réel avant de stopper l'intervalle.
+  if(chronoRunStart!=null) chronoSec=Math.max(0,Math.floor((Date.now()-chronoRunStart)/1000));
+  chronoRunStart=null;
   chronoRunning=false;
   clearInterval(chronoInterval);
   document.getElementById('chronoDisplay').className='chrono-display paused';
@@ -3582,7 +3597,7 @@ function chronoPause(){
 function chronoReset(){
   chronoRunning=false;
   clearInterval(chronoInterval);
-  chronoSec=0;chronoStartTs=null;
+  chronoSec=0;chronoStartTs=null;chronoRunStart=null;
   document.getElementById('chronoDisplay').textContent='00:00:00';
   document.getElementById('chronoDisplay').className='chrono-display';
   document.getElementById('chronoStartBtn').classList.remove('hidden');
@@ -3590,6 +3605,15 @@ function chronoReset(){
   document.getElementById('chronoPauseBtn').classList.add('hidden');
   document.getElementById('chronoStatus').textContent='Prêt — appuie sur Démarrer quand tu commences la commande';
   stopAutosave();
+}
+// Au réveil du téléphone / retour d'onglet, recaler immédiatement l'affichage
+// (l'intervalle a pu être suspendu pendant la veille — chronoTick recalcule
+// le vrai temps écoulé depuis l'horodatage de départ).
+function chronoCatchUp(){ if(chronoRunning) chronoTick(); }
+if(typeof document!=='undefined' && document.addEventListener){
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden) chronoCatchUp(); });
+  window.addEventListener('focus',chronoCatchUp);
+  window.addEventListener('pageshow',chronoCatchUp);
 }
 
 // ============================================================
@@ -3708,7 +3732,13 @@ function recalcEcartsFromFiche(){
   }
 
   const multi=computed.length>1;
-  const refKey=c=>(c.ref||'');
+  // Clé de référence normalisée : trim + minuscules. Le rapprochement
+  // "réellement coupé" <-> commande se fait par référence ; sans normalisation,
+  // une simple différence de casse ou d'espace (ex. "KX1045-1" vs "kx1045-1 ")
+  // rangeait le coupé dans une autre case que la commande -> aucune déduction
+  // en aval + surproduction. On compare donc toujours sur la clé normalisée.
+  const nrmRef=v=>String(v==null?'':v).trim().toLowerCase();
+  const refKey=c=>nrmRef(c.ref);
 
   // Commande par réf (cible client, fixe)
   const cmdByRef={};
@@ -3725,7 +3755,7 @@ function recalcEcartsFromFiche(){
   const committedByRef={};
   ficheLines.forEach(l=>{
     if(!frozenSet.has(l.id)) return;
-    const k=l.ref||'';
+    const k=nrmRef(l.ref);
     const m=committedByRef[k]||(committedByRef[k]={});
     parseConf(document.getElementById('flConf_'+l.id)?.value||'').forEach(p=>{m[p.width]=(m[p.width]||0)+p.qty;});
   });
@@ -3773,7 +3803,7 @@ function recalcEcartsFromFiche(){
       if(multi) insertFicheRefSeparator(c.ref||('Référence '+(ci+1)), c.useful, c.longueur);
 
       // 3a) Ré-attacher les bobines figées de cette réf (ordre d'origine préservé).
-      frozenMetas.filter(l=>(l.ref||'')===k).forEach(l=>{ cont.appendChild(frozenNodes[l.id]); ficheLines.push(l); });
+      frozenMetas.filter(l=>nrmRef(l.ref)===k).forEach(l=>{ cont.appendChild(frozenNodes[l.id]); ficheLines.push(l); });
 
       // 3b) Ré-empaqueter le reliquat de cette réf avec SA laize / SA lame.
       const items=[];
@@ -3806,7 +3836,7 @@ function recalcEcartsFromFiche(){
 
     // 4) Bobines figées dont la réf n'existe plus dans le plan : conservées en fin de liste.
     const known=new Set(computed.map(c=>refKey(c)));
-    frozenMetas.filter(l=>!known.has(l.ref||'')).forEach(l=>{ cont.appendChild(frozenNodes[l.id]); ficheLines.push(l); });
+    frozenMetas.filter(l=>!known.has(nrmRef(l.ref))).forEach(l=>{ cont.appendChild(frozenNodes[l.id]); ficheLines.push(l); });
 
     recalcPlan();
     updateAllCumuls();
@@ -6188,6 +6218,7 @@ function restoreFicheState(st){
 function restoreChrono(c){
   clearInterval(chronoInterval);
   chronoRunning=false;
+  chronoRunStart=null;
   if(!c||!c.sec||c.sec<=0){
     chronoSec=0; chronoStartTs=null;
     document.getElementById('chronoDisplay').textContent='00:00:00';
