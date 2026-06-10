@@ -446,7 +446,9 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
     <div id="statsBar" class="stats-bar"></div>
     <div class="action-bar">
       <button class="btn btn-blue btn-sm" id="planSaveBtn" onclick="openSaveModal()">💾 Sauvegarder</button>
+      <button class="btn btn-ghost btn-sm" id="planEditBtn" onclick="togglePlanManual()">✏️ Modifier le plan à la main</button>
     </div>
+    <div id="planManualHint" style="display:none;font-size:12px;color:var(--orange);margin:0 0 8px">✏️ Mode édition manuelle — modifie les bobines ci-dessous. Tout changement d'une donnée du plan (largeur, mère, machine…) régénère le plan automatiquement et efface ces modifs.</div>
     <div id="planCards"></div>
   </div>
 </div>
@@ -525,7 +527,7 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
     <div class="row2">
       <div class="field">
         <label>Lame N°</label>
-        <input type="text" id="fNumLame" placeholder="ex : L-12" inputmode="text" oninput="invalidateFichePlan()">
+        <input type="text" id="fNumLame" placeholder="ex : L-12" inputmode="text">
       </div>
       <div class="field">
         <label>N° Jour</label>
@@ -585,18 +587,20 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
           <div class="row3" style="margin-top:12px">
             <div class="field">
               <label>Bobine mère (mm)</label>
-              <input type="text" id="fMother2" inputmode="decimal" oninput="updateUtile2()">
+              <input type="text" id="fMother2" inputmode="decimal" oninput="updateUtile2();invalidateFichePlan()">
             </div>
             <div class="field">
               <label>Perte bords (mm)</label>
-              <input type="text" id="fEdge2" inputmode="decimal" oninput="updateUtile2()">
+              <input type="text" id="fEdge2" inputmode="decimal" oninput="updateUtile2();invalidateFichePlan()">
             </div>
             <div class="field">
               <label>Perte lame (mm)</label>
-              <input type="text" id="fBlade2" inputmode="decimal">
+              <input type="text" id="fBlade2" inputmode="decimal" oninput="invalidateFichePlan()">
             </div>
           </div>
           <div class="text-muted" style="font-size:12px;margin-top:6px">Largeur utile : <span id="fUtile2" style="color:var(--green);font-weight:700">—</span> mm</div>
+          <button class="btn btn-orange btn-sm" style="margin-top:10px" onclick="applyOp2PlanChange()">🔧 Changement plan op.2</button>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">Re-découpe les bobines non encore coupées avec la largeur utile op.2.</div>
         </div>
       </div>
     </div>
@@ -1697,6 +1701,11 @@ let selectedIni2 = '';
 let planGroups = [];
 let planChecked = [];
 let planOversize = [];
+// Plan modifié à la main (onglet Plan). null = plan auto. Quand défini, il sert
+// à l'affichage, à l'impression et à la génération de la fiche. Tout recalcul
+// auto (changement de donnée) le remet à null (les modifs manuelles sont alors
+// écrasées — comportement validé).
+let planManual = null;
 let commandTotals = {};
 let mandrinByWidthPlan = {}; // largeur -> code mandrin (Legrand France)
 let cartonByWidth = {};
@@ -2229,8 +2238,21 @@ function importPlanToFiche(opts){
     let bi=1;
     computed.forEach((c,ci)=>{
       if(multi) insertFicheRefSeparator(c.ref||('Référence '+(ci+1)), c.useful, c.longueur);
+      const man=planManual&&planManual[ci];
       const myChutes=(ficheChutes||[]).filter(ch=>(ch.ref||'')===(c.ref||''));
-      if(myChutes.length){
+      if(man){
+        // Plan modifié à la main : il fait foi, on génère les bobines telles
+        // que saisies (les chutes éventuelles y sont déjà incluses par l'opérateur).
+        man.bobines.forEach(b=>{
+          const cnt=Math.max(1,parseInt(b.count)||1);
+          for(let k=0;k<cnt;k++){
+            addFicheLine({label:(multi&&c.ref?c.ref+' · ':'')+'BOB-'+String(bi).padStart(3,'0'),
+              conf:(b.conf||'').replace(/x/gi,'×'),
+              ref:c.ref||'', useful:man.useful, blade:man.blade});
+            bi++;
+          }
+        });
+      }else if(myChutes.length){
         // (#2) Consommer d'abord les chutes du stock (1 bobine par chute, laize
         // utile = largeur chute − perte bords), puis recalculer le reste sur les
         // bobines mères pleines. Algo de packing inchangé : couche d'allocation.
@@ -2268,7 +2290,10 @@ function importPlanToFiche(opts){
     });
     refreshOp2BobineList();
     refreshEtiquetteSolde();
-    invalidateFichePlan(); // nouvelle fiche : plan à (re)valider avant chrono
+    // Fiche fraîchement générée depuis un plan valide : le chrono est autorisé
+    // SANS recliquer « Changement plan ». Le verrou ne se réarme que si
+    // l'opérateur modifie ensuite une dimension (mère/bords/lame) ou une chute.
+    fichePlanValidated=true; updateFPlanHint();
 
     if(!auto){
       showPage(1);
@@ -2946,6 +2971,11 @@ function debouncedRecalcPlan(){
   _recalcPlanTimer=setTimeout(recalcPlan,delay);
 }
 function recalcPlan(){
+  // Tout recalcul automatique repart du plan optimisé : on abandonne une
+  // éventuelle édition manuelle en cours (comportement validé).
+  planManual=null;
+  const peb=document.getElementById('planEditBtn'); if(peb) peb.textContent='✏️ Modifier le plan à la main';
+  const pmh=document.getElementById('planManualHint'); if(pmh) pmh.style.display='none';
   if(document.getElementById('usefulDisplay'))
     document.getElementById('usefulDisplay').textContent='Largeur utile : '+fmt(getUseful())+' mm';
   const groups=getRefGroups();
@@ -3048,6 +3078,92 @@ function recalcPlan(){
   // L'étiquette solde est désormais gérée en bas de la Fiche découpe (plus dans le Plan).
 }
 
+// ===== Édition manuelle du plan (onglet Plan) =====
+function togglePlanManual(){
+  if(planManual){ planManual=null; recalcPlan(); return; }
+  enterPlanManual();
+}
+function enterPlanManual(){
+  const computed=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
+  if(!computed.length){ alert('Aucun plan à modifier — saisis d\'abord la commande.'); return; }
+  planManual=computed.map((c,ci)=>({
+    ref:c.ref||'', useful:c.useful, blade:c.blade, longueur:c.longueur,
+    mother:c.mother, edge:c.edge, film:c.film, veka:c.veka,
+    bobines:c.planGroups.map(g=>({count:g.count, conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + ')}))
+  }));
+  const peb=document.getElementById('planEditBtn'); if(peb) peb.textContent='↩ Revenir au plan auto';
+  const pmh=document.getElementById('planManualHint'); if(pmh) pmh.style.display='block';
+  renderPlanManual();
+}
+// Recalcule les totaux d'un plan manuel (perte/chute) à l'affichage.
+function planManualStats(){
+  let totalBobines=0,totalMat=0,totalUsed=0,chuteStock=0;
+  planManual.forEach(r=>{
+    let lastUsed=null;
+    r.bobines.forEach(b=>{
+      const cnt=Math.max(1,parseInt(b.count)||1);
+      const used=calcStats(parseConf(b.conf),r.blade).total;
+      totalBobines+=cnt; totalMat+=cnt*r.useful; totalUsed+=cnt*used; lastUsed=used;
+    });
+    if(lastUsed!=null) chuteStock+=Math.max(0,r.useful-lastUsed); // 1 solde par réf
+  });
+  const perteMm=Math.max(0,totalMat-totalUsed-chuteStock);
+  const pertePct=totalMat>0?(perteMm/totalMat*100):0;
+  return {totalBobines,totalMat,totalUsed,chuteStock,perteMm,pertePct};
+}
+function renderPlanManual(){
+  if(!planManual) return;
+  const statsEl=document.getElementById('statsBar');
+  const cardsEl=document.getElementById('planCards');
+  const multi=planManual.length>1;
+  const s=planManualStats();
+  const perteCls=s.pertePct<3?'pct-green':s.pertePct<8?'pct-orange':'pct-red';
+  if(statsEl) statsEl.innerHTML=`
+    <div class="stat-chip">${s.totalBobines} bobine${s.totalBobines>1?'s':''}</div>
+    <div class="stat-chip" style="background:#3a2e14;color:#fcd34d">✏️ plan manuel</div>
+    <div class="stat-chip ${perteCls}">🗑 Perte : <span style="font-weight:700">${fmt(Math.round(s.perteMm))} mm · ${s.pertePct.toFixed(1)}%</span></div>
+    <div class="stat-chip">✂ Chute stock <span style="font-weight:700;color:var(--orange)">${fmt(Math.round(s.chuteStock))} mm</span></div>`;
+  let html='';
+  planManual.forEach((r,ri)=>{
+    if(multi){
+      html+=`<div class="ref-band">🎞 ${esc(r.ref||('Référence '+(ri+1)))} — laize ${fmt(r.useful)} mm · lame ${fmt(r.blade)} mm${r.longueur?` · ${esc(String(r.longueur))} ml`:''}</div>`;
+    }
+    r.bobines.forEach((b,bi)=>{
+      const used=calcStats(parseConf(b.conf),r.blade).total;
+      const waste=r.useful-used;
+      const over=used>r.useful+0.01;
+      html+=`<div class="bobine-card" style="${over?'border-color:var(--red)':''}">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="number" min="1" value="${Math.max(1,parseInt(b.count)||1)}" onchange="updateManualBobine(${ri},${bi},'count',this.value)" style="width:64px" title="Nb de bobines">
+          <span style="color:var(--muted)">×</span>
+          <input type="text" value="${esc(b.conf)}" onchange="updateManualBobine(${ri},${bi},'conf',this.value)" placeholder="4×100 + 2×120" style="flex:1;min-width:160px" title="Configuration (laizes)">
+          <button onclick="removeManualBobine(${ri},${bi})" title="Supprimer cette bobine" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:15px">🗑</button>
+        </div>
+        <div class="card-sub" style="margin-top:5px">${fmt(used)} / ${fmt(r.useful)} mm · ${over?'<span style="color:var(--red);font-weight:700">⛔ dépasse la laize utile</span>':(waste<r.useful*0.03?'<span class="badge badge-green">':'<span class="badge badge-orange">')+fmt(waste)+' mm chute</span>'}</div>
+      </div>`;
+    });
+    html+=`<button class="btn btn-ghost btn-sm" style="margin:4px 0 10px" onclick="addManualBobine(${ri})">+ Ajouter une bobine${multi?' à cette réf':''}</button>`;
+  });
+  if(cardsEl) cardsEl.innerHTML=html;
+}
+function updateManualBobine(ri,bi,field,val){
+  if(!planManual||!planManual[ri]||!planManual[ri].bobines[bi]) return;
+  if(field==='count') planManual[ri].bobines[bi].count=Math.max(1,parseInt(val)||1);
+  else planManual[ri].bobines[bi].conf=val;
+  renderPlanManual();
+}
+function addManualBobine(ri){
+  if(!planManual||!planManual[ri]) return;
+  planManual[ri].bobines.push({count:1, conf:''});
+  renderPlanManual();
+}
+function removeManualBobine(ri,bi){
+  if(!planManual||!planManual[ri]) return;
+  if(!confirm('Supprimer cette bobine du plan ?')) return;
+  planManual[ri].bobines.splice(bi,1);
+  renderPlanManual();
+}
+
 function resetPlan(){
   planChecked=[];
   // Retire tous les blocs réf supplémentaires (garde le bloc #1)
@@ -3120,7 +3236,12 @@ function mandrinRecapHTML(groups,client){
   <table><tr><th>Largeur</th><th>Code mandrin (4 chiffres)</th></tr>${rows}</table>`;
 }
 function getPlanHTML(){
-  const groups=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
+  const autoGroups=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
+  // Si le plan a été modifié à la main, on imprime cette version.
+  const groups=planManual
+    ? planManual.map(r=>({ref:r.ref, useful:r.useful, blade:r.blade, longueur:r.longueur, mother:r.mother, edge:r.edge, film:r.film, veka:r.veka,
+        planGroups:r.bobines.map(b=>({count:Math.max(1,parseInt(b.count)||1), pattern:parseConf(b.conf)}))}))
+    : autoGroups;
   const mn=getMachineLabel(currentMachine);
   const client=document.getElementById('planClient').value||'—';
   const typeCond=document.getElementById('planType').value||'—';
@@ -3169,7 +3290,7 @@ function getPlanHTML(){
   ${metaTech}<br>
   Packaging : Palette <b>${palette}</b> · Type <b>${typeCond}</b> · Étiquetage <b>${etiquetage}</b> · Cerclage <b>${cerclage}</b>${notesEmb?'<br><em style="font-size:10px;color:#666">'+notesEmb.replace(/\n/g,' | ')+'</em>':''}</div>
   ${sections}
-  ${mandrinRecapHTML(groups,client)}</body></html>`;
+  ${mandrinRecapHTML(autoGroups,client)}</body></html>`;
 }
 // Imprime un plan SAUVEGARDÉ (Données > Plans) sans le charger dans l'éditeur.
 // Reconstruit le HTML depuis l'objet save (refGroups), comme getPlanHTML mais
@@ -3626,7 +3747,7 @@ function chronoStart(){
     return;
   }
   if(!fichePlanValidated){
-    alert('⚠ Clique sur « Changement plan » pour valider le plan de découpe avant de démarrer le chronomètre.');
+    alert('⚠ Tu as modifié une dimension (mère / bords / lame / chute).\n\nClique sur « Changement plan » pour recalculer avant de démarrer le chronomètre.');
     return;
   }
   chronoRunning=true;
@@ -3773,8 +3894,10 @@ async function confirmCommande(){
 //  - une bobine mère neuve n'apparaît que si c'est inévitable (et remplie au mieux par pack) ;
 //  - un surplus déjà coupé est tracé, jamais recoupé.
 // Ré-exécutable sans doublon.
-function recalcEcartsFromFiche(){
-  if(!chronoRunning){
+function recalcEcartsFromFiche(opts){
+  opts=opts||{};
+  const op2=opts.op2||null; // {refKey, useful, blade} : re-pack du reste avec la laize op.2
+  if(!op2 && !chronoRunning){
     alert('⏱ Le chronomètre doit être en marche pour recalculer le plan.');
     return;
   }
@@ -3866,20 +3989,24 @@ function recalcEcartsFromFiche(){
       // 3a) Ré-attacher les bobines figées de cette réf (ordre d'origine préservé).
       frozenMetas.filter(l=>nrmRef(l.ref)===k).forEach(l=>{ cont.appendChild(frozenNodes[l.id]); ficheLines.push(l); });
 
-      // 3b) Ré-empaqueter le reliquat de cette réf avec SA laize / SA lame.
+      // 3b) Ré-empaqueter le reliquat de cette réf. Par défaut avec SA laize/lame ;
+      // si op.2 est ciblé sur cette réf, on utilise la laize utile / lame de l'op.2.
+      const useOp2=!!(op2 && refKey(c)===op2.refKey);
+      const pu=useOp2?op2.useful:c.useful;
+      const pb=useOp2?op2.blade:c.blade;
       const items=[];
       Object.entries(residualByRef[k]||{}).forEach(([w,q])=>{for(let i=0;i<q;i++) items.push(Number(w));});
       let added=0, waste=0;
       if(items.length){
-        const bobines=pack(items.sort((a,b)=>b-a),c.useful,c.blade);
-        const groups=groupBobines(bobines,c.blade);
+        const bobines=pack(items.sort((a,b)=>b-a),pu,pb);
+        const groups=groupBobines(bobines,pb);
         let ri=1;
         groups.forEach(g=>{
-          waste+=(c.useful-calcStats(g.pattern,c.blade).total)*g.count;
+          waste+=(pu-calcStats(g.pattern,pb).total)*g.count;
           for(let n=0;n<g.count;n++){
-            addFicheLine({label:(multi&&c.ref?c.ref+' · ':'')+'RESTE-'+String(ri).padStart(2,'0'),
+            addFicheLine({label:(multi&&c.ref?c.ref+' · ':'')+(useOp2?'OP2-':'RESTE-')+String(ri).padStart(2,'0'),
               conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + '),
-              ref:c.ref||'', useful:c.useful, blade:c.blade});
+              ref:c.ref||'', useful:pu, blade:pb});
             ri++; added++;
           }
         });
@@ -3906,8 +4033,11 @@ function recalcEcartsFromFiche(){
     renumberFicheLines();
     refreshEtiquetteSolde();
 
-    const head=totalAdded>0?'♻ Plan ré-optimisé.':'♻ Recalcul terminé — commande couverte.';
+    const head=op2
+      ? '🔧 Plan re-découpé pour l\'opérateur 2 (laize utile '+fmt(op2.useful)+' mm).'
+      : (totalAdded>0?'♻ Plan ré-optimisé.':'♻ Recalcul terminé — commande couverte.');
     alert(head+'\n\n'+recap.join('\n'));
+    if(op2){ fichePlanValidated=true; updateFPlanHint(); }
   },1000);
 }
 
@@ -5722,6 +5852,9 @@ function selectFicheMachine(m){
   }
   if(typeof refreshAllTest2==='function') refreshAllTest2();
   refreshFicheParams();
+  // Changer de machine modifie bords/lame -> dimensions du plan changées :
+  // on reverrouille le chrono jusqu'au prochain « Changement plan ».
+  if(typeof invalidateFichePlan==='function') invalidateFichePlan();
 }
 // Recopie les champs fiche (bobine mère / perte bords / lame) -> champs plan,
 // puis recalcule. Les deux jeux de champs restent synchronisés.
@@ -5744,10 +5877,10 @@ function invalidateFichePlan(){
 function updateFPlanHint(){
   const h=document.getElementById('fPlanHint'); if(!h) return;
   if(fichePlanValidated){
-    h.textContent='✓ Plan validé — tu peux démarrer le chrono.';
+    h.textContent='✓ Prêt — tu peux démarrer le chrono.';
     h.style.color='var(--green)';
   }else{
-    h.textContent='⚠ Renseigne les 4 champs machine puis clique « Changement plan » avant de démarrer le chrono.';
+    h.textContent='⚠ Tu as modifié une dimension (mère / bords / lame / chute) — clique « Changement plan » avant de démarrer le chrono.';
     h.style.color='var(--orange)';
   }
 }
@@ -5840,6 +5973,42 @@ function refreshFicheParams(){
   if(fe&&e) fe.value=e.value;
   if(fb&&b) fb.value=b.value;
 }
+// Bouton « Changement plan op.2 » : re-découpe TOUTES les bobines non encore
+// coupées avec la largeur utile / lame de l'opérateur 2. Les bobines déjà
+// coupées sont conservées. En multi-réf, l'op.2 reprend la réf choisie.
+function applyOp2PlanChange(){
+  if(!document.getElementById('fOp2Active')?.checked || !document.getElementById('fOp2DiffMachine')?.checked){
+    alert('⚠ Active l\'opérateur 2 et coche « A coupé sur une autre machine » avant de recalculer son plan.');
+    return;
+  }
+  const m2=parseNum(document.getElementById('fMother2')?.value);
+  const e2=parseNum(document.getElementById('fEdge2')?.value);
+  const b2=parseNum(document.getElementById('fBlade2')?.value);
+  if(!(m2>0)){ alert('⚠ Renseigne la bobine mère de l\'opérateur 2.'); return; }
+  const useful2=Math.max(0,m2-e2);
+  if(!(useful2>0)){ alert('⚠ La largeur utile op.2 (mère − bords) est nulle.'); return; }
+  const groups=(typeof getRefGroups==='function'?getRefGroups():[]).filter(g=>(g.rows||[]).length);
+  if(!groups.length){ alert('Aucune commande à recalculer.'); return; }
+  const nrm=v=>String(v==null?'':v).trim().toLowerCase();
+  let refKey;
+  if(groups.length>1){
+    const list=groups.map((g,i)=>(i+1)+') '+(g.ref||('Référence '+(i+1)))).join('\n');
+    const sel=prompt('L\'opérateur 2 reprend quelle référence ?\n'+list+'\n\nTape le numéro :','1');
+    if(sel===null) return;
+    const idx=parseInt(sel,10)-1;
+    if(isNaN(idx)||idx<0||idx>=groups.length){ alert('Numéro de référence invalide.'); return; }
+    refKey=nrm(groups[idx].ref);
+  }else{
+    refKey=nrm(groups[0].ref);
+  }
+  const tgt=groups.find(g=>nrm(g.ref)===refKey)||groups[0];
+  const tooWide=(tgt.rows||[]).filter(r=>r.width>useful2).map(r=>r.width);
+  if(tooWide.length){
+    alert('⛔ Recalcul op.2 bloqué : '+tooWide.map(w=>fmt(w)+' mm').join(', ')+' dépasse(nt) la largeur utile op.2 ('+fmt(useful2)+' mm).');
+    return;
+  }
+  recalcEcartsFromFiche({op2:{refKey, useful:useful2, blade:b2}});
+}
 function selectFicheMachine2(m){
   ficheMachine2=m;
   document.getElementById('fBtnFeba2').className='machine-btn-fiche'+(m==='feba'?' sel-feba':'');
@@ -5855,6 +6024,7 @@ function selectFicheMachine2(m){
     if(fm&&!fm.value&&pm) fm.value=pm.value;
     if(typeof updateUtile2==='function') updateUtile2();
   }
+  if(typeof invalidateFichePlan==='function') invalidateFichePlan();
 }
 function toggleOp2Machine(){
   const on=document.getElementById('fOp2DiffMachine').checked;
@@ -6348,6 +6518,9 @@ function restoreFicheState(st){
   ficheChutes=Array.isArray(st.chutes)?st.chutes.slice():[]; renderFicheChutes();
   (st.lines||[]).forEach(restoreFicheLineFromData);
   updateAllCumuls();updateCoupeeStatus();refreshOp2BobineList();renumberFicheLines();
+  // Brouillon repris = plan déjà valide : le chrono peut redémarrer sans
+  // recliquer « Changement plan » (sauf si l'opérateur modifie une dimension).
+  fichePlanValidated=true; updateFPlanHint();
   // Reprise du chrono à la valeur où le brouillon a été créé (remis en pause).
   restoreChrono(st.chrono);
 }
