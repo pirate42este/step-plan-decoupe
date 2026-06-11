@@ -722,6 +722,9 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
       ✓ Confirmer la commande &amp; enregistrer
     </button>
     <div style="text-align:center;margin-top:6px;font-size:12px;color:var(--muted)" id="sendPlanHint">Marque toutes les bobines comme Coupées pour pouvoir confirmer</div>
+    <button id="manqueMatiereBtn" class="btn" style="width:100%;justify-content:center;font-size:14px;margin-top:10px;background:#3d1414;border:1px solid #f87171;color:#f87171;display:none" onclick="stopManqueMatiere()">
+      ⛔ Arrêt — Manque de matière
+    </button>
   </div>
 </div>
 
@@ -3533,7 +3536,12 @@ function printSavedPlan(id){
     const mother=parseNum(g.mother), edge=parseNum(g.edge!=null?g.edge:s.edgeLoss);
     return {ref:g.ref||'', longueur:g.longueur||'', film:g.film||'', veka:g.veka||'', mother, edge, useful:Math.max(0,mother-edge), blade:parseNum(g.blade!=null?g.blade:s.blade), machine:g.machine||'', rows:g.rows||[]};
   });
-  const groups=packRefGroups(grpInput).filter(c=>c.rows.length);
+  // Plan manuel sauvegardé → on l'utilise tel quel ; sinon recalcul automatique.
+  const groups=Array.isArray(s.planManual)&&s.planManual.length
+    ? s.planManual.map(r=>({ref:r.ref, useful:r.useful, blade:r.blade, longueur:r.longueur, mother:r.mother, edge:r.edge, film:r.film||'', veka:r.veka||'', machine:r.machine||'',
+        planGroups:r.bobines.map(b=>({count:Math.max(1,parseInt(b.count)||1), pattern:parseConf(b.conf)}))
+      }))
+    : packRefGroups(grpInput).filter(c=>c.rows.length);
   const mn=getMachineLabel(s.machine||currentMachine);
   const client=s.client||'—';
   const typeCond=s.typeCond||s.carton||'—', palette=s.palette||'—';
@@ -3799,6 +3807,7 @@ async function doSave(){
     cerclage:document.getElementById('planCerclage').value||'',
     notesEmballage:document.getElementById('planNotesEmballage').value||'',
     commandeFiles:(migrateCommandePhoto(),commandeFiles.slice()),
+    planManual:planManual?JSON.parse(JSON.stringify(planManual)):null,
     deleted:false,
     date:isoNow()
   };
@@ -4008,6 +4017,13 @@ function doLoad(){
 
   commandePhoto='';commandeFiles=readCommandeFiles(s);refreshCommandePhotoZone();
   try{ recalcPlan(); }catch(e){ console.warn('doLoad recalc:',e); }
+  // Plan manuel sauvegardé : on le restaure APRÈS recalcPlan (qui l'aurait écrasé).
+  if(Array.isArray(s.planManual)&&s.planManual.length){
+    planManual=JSON.parse(JSON.stringify(s.planManual));
+    const peb=document.getElementById('planEditBtn'); if(peb) peb.textContent='↩ Revenir au plan auto';
+    const pmh=document.getElementById('planManualHint'); if(pmh) pmh.style.display='block';
+    renderPlanManual();
+  }
   closeLoadModal();showPage(0);
 }
 async function deleteSave(id){
@@ -4138,6 +4154,41 @@ function buildRattrapageGroups(deficit,useful,blade){
   return groupBobines(bobines,blade);
 }
 
+// ============================================================
+// ARRÊT MANQUE DE MATIÈRE
+// Stoppe le chrono, marque les bobines non coupées, envoie la fiche
+// avec le flag manqueMatiere:true.
+// ============================================================
+async function stopManqueMatiere(){
+  if(!ficheLines.length){alert('Aucune fiche en cours.');return;}
+  const total=ficheLines.length;
+  const done=ficheLines.filter(({id})=>document.getElementById(id)?.classList.contains('coupee')).length;
+  if(done===0){alert('⚠ Aucune bobine coupée.\n\nMarque au moins une bobine comme "Coupée" avant de déclarer un manque de matière.');return;}
+  if(!confirm(`⛔ Arrêt manque de matière ?\n\n${done} bobine(s) coupée(s), ${total-done} non réalisée(s).\n\nLes ${total-done} bobines restantes seront marquées "Non réalisée - manque matière".\nLe chrono sera arrêté et la fiche enregistrée.`)) return;
+
+  // 1. Arrêter le chrono
+  if(chronoRunning) chronoPause();
+
+  // 2. Marquer toutes les bobines non coupées
+  ficheLines.forEach(({id})=>{
+    const el=document.getElementById(id);
+    if(!el||el.classList.contains('coupee')) return;
+    // Ajouter classe visuelle + flag data
+    el.classList.add('manque-matiere');
+    el.dataset.manqueMatiere='1';
+    // Inscrire dans le champ conf si vide, sinon préfixer
+    const confEl=document.getElementById('flConf_'+id);
+    if(confEl&&!confEl.value.trim()) confEl.value='Non réalisée - manque matière';
+  });
+
+  // 3. Envoyer la fiche avec le flag
+  const computed=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
+  const multi=computed.length>1;
+  const rows=multi?[].concat(...computed.map(c=>c.rows)):getOrderRows();
+  const useful=getUseful(),blade=getBlade();
+  await saveCommandeFiche(rows,useful,blade,{modifié:false,ecartLines:[],manqueMatiere:true});
+}
+
 async function confirmCommande(){
   packTruncated=false;   // reset : packRefGroups ci-dessous le lèvera si saisie aberrante
   const computed=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
@@ -4169,7 +4220,7 @@ async function confirmCommande(){
   const total=ficheLines.length;
   const done=ficheLines.filter(({id})=>document.getElementById(id)?.classList.contains('coupee')).length;
   if(done<total){
-    alert(`⚠ ${total-done} bobine(s) non coupée(s) sur ${total}.\n\nMarque toutes les bobines comme "✓ Coupée" avant de confirmer.`);
+    alert(`⚠ ${total-done} bobine(s) non coupée(s) sur ${total}.\n\nMarque toutes les bobines comme "✓ Coupée" avant de confirmer.\n\nSi tu n'as pas assez de matière, utilise le bouton "⛔ Arrêt — Manque de matière".`);
     return;
   }
   // Garde-fou NC sans détail
@@ -4465,7 +4516,8 @@ async function saveCommandeFiche(rows,useful,blade,opts){
     nbPlan,nbFiche,hasEcart,ecartMsg,modifie:!!opts.modifié,
     commandeFiles:(migrateCommandePhoto(),commandeFiles.slice()),
     bls:[],
-    valide:null,valideBy:null,valideAt:null
+    valide:null,valideBy:null,valideAt:null,
+    manqueMatiere:opts.manqueMatiere===true
   };
   let tempsEntry=null;
   if(chronoSec>0){
@@ -5322,17 +5374,19 @@ function renderFiches(){
     if(f.valide===true){statusBadge=`✓ Validée${f.valideBy?' · '+esc(f.valideBy):''}`;statusColor='background:#14371f;color:#4ade80';}
     else if(f.valide===false){statusBadge=`✗ Refusée${f.valideBy?' · '+esc(f.valideBy):''}`;statusColor='background:#3d1414;color:#f87171';}
     else{statusBadge=`⏳ En attente`;statusColor='background:#3d2a00;color:#f59e0b';}
+    const mmBadge=f.manqueMatiere?`<div style="margin:6px 0;padding:6px 10px;border-radius:8px;background:rgba(248,113,113,0.12);border:1px solid #f87171;color:#f87171;font-size:12px;font-weight:700">⛔ Arrêt manque de matière</div>`:'';
     // Modifier : ouvert à tous les opérateurs tant que la fiche n'est pas validée (BL posé).
     const editBtn=f.valide!==true?`<button class="fc-btn fc-btn-blue" onclick="editFicheConfigs('${f._id}')" title="Modifier">✏ Modifier</button>`:'';
     // Valider / Refuser : réservés au pilotage/admin.
     const validBtns=canValidate()?`
       ${f.valide!==true?`<button class="fc-btn fc-btn-green" onclick="validateFiche('${f._id}')" title="Valider">✓ Valider</button>`:''}
       <button class="fc-btn fc-btn-red" onclick="rejectFiche('${f._id}')" title="Refuser">✗ Refuser</button>`:'';
-    return `<div class="fiche-card"${f.modifie?' style="border-color:#caa15a"':''}>
+    return `<div class="fiche-card"${f.modifie?' style="border-color:#caa15a"':f.manqueMatiere?' style="border-color:#f87171"':''}>
       <div class="fc-header">
         <div class="fc-title">${esc(f.name)}</div>
         <div class="fc-status" style="${statusColor}">${statusBadge}</div>
       </div>
+      ${mmBadge}
       ${f.modifie?`<div style="margin:6px 0;padding:6px 10px;border-radius:8px;background:rgba(245,158,11,0.10);border:1px solid #caa15a;color:#d9a441;font-size:12px;font-weight:600">⚠ Modifiée${f.ecartMsg?` — ${esc(f.ecartMsg)}`:''}</div>`:''}
       ${blCardBlock(f)}
       ${numCmdHas?`<div class="fc-cmd"><span class="fc-cmd-badge">N° ${esc(f.numCmd)}</span>${f.dateLiv&&f.dateLiv!=='—'?`<span class="fc-cmd-liv">📅 Livr. ${esc(f.dateLiv)}</span>`:''}</div>`:''}
@@ -6684,6 +6738,9 @@ function updateCoupeeStatus(){
     sendBtn.style.cursor=allDone?'pointer':'not-allowed';
   }
   if(hint) hint.style.display=allDone?'none':'block';
+  // Bouton manque matière : visible dès qu'au moins 1 bobine coupée (et pas tout fini)
+  const mmBtn=document.getElementById('manqueMatiereBtn');
+  if(mmBtn) mmBtn.style.display=(done>0&&!allDone)?'flex':'none';
 }
 function updateTest2Subs(id){
   const elDevi=document.getElementById('flDevi_'+id);
