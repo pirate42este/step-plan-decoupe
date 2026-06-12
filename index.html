@@ -130,6 +130,17 @@ select.veka-veka{border-color:#e879f9;color:#e879f9;background:#2e0c30;font-weig
 .rb-chute-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
 .rb-chute-row input{flex:0 0 auto}
 .fiche-chute-note{font-size:12px;font-weight:700;color:var(--orange);background:#2a1f08;border:1px solid #7a5200;border-radius:6px;padding:4px 9px;margin-top:6px;display:inline-block}
+/* ROULEAUX À RECOUPER (chute d'une autre laize, recoupée en 1er) */
+.btn-recut{background:#06281f;color:#5eead4;border:1px solid #115e52}.btn-recut:hover{background:#0a3a2d}
+.rb-recuts:not(:empty){margin-top:10px;border:1px solid #115e52;border-left:3px solid #5eead4;border-radius:10px;background:#06231c;padding:9px 11px}
+.rb-recuts:not(:empty)::before{content:"♻ Rouleau à recouper — recoupé en 1er, chute mini";display:block;font-size:11px;font-weight:700;color:#5eead4;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.rb-recut-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.rb-recut-row input{flex:0 0 auto}
+.recut-tag{font-size:11px;font-weight:700;color:#000;background:#5eead4;border-radius:5px;padding:2px 7px;white-space:nowrap}
+.bobine-card.recut{background:#06231c;border-color:#115e52;border-left-color:#5eead4}
+.bobine-card.recut .bc-count{color:#5eead4}
+.badge-recut{background:#06281f;color:#5eead4;border:1px solid #115e52;border-radius:5px;padding:2px 8px;font-size:12px;font-weight:700;white-space:nowrap}
+.recut-band{background:#06231c;border:1px solid #115e52;border-radius:10px;padding:8px 13px;margin:0 0 9px;font-size:13px;color:#5eead4;font-weight:600}
 .counter-row{display:flex;align-items:center;gap:12px;margin-bottom:10px}
 .counter-text{font-size:13px;color:var(--muted);white-space:nowrap}
 .counter-text strong{color:var(--text)}
@@ -435,11 +446,13 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
       <input type="hidden" id="planLargeur" data-rb="largeur">
       <div class="section-title" style="margin:12px 0 8px">Largeurs à découper</div>
       <div class="rb-rows" data-rb="rows"></div>
-      <div class="flex mt8" style="gap:8px">
+      <div class="flex mt8" style="gap:8px;flex-wrap:wrap">
         <button class="btn btn-ghost btn-sm" onclick="addOrderRowTo(this)">+ Ajouter une ligne</button>
-        <button class="btn btn-orange btn-sm" onclick="addPlanChuteTo(this)" title="Bobineaux déjà en stock à la bonne largeur — déduits de la commande">✂ Chutes en stock</button>
+        <button class="btn btn-orange btn-sm" onclick="addPlanChuteTo(this)" title="Bobineaux déjà en stock à la bonne largeur — déduits de la commande">✂ Bobineaux en stock</button>
+        <button class="btn btn-recut btn-sm" onclick="addPlanRecutTo(this)" title="Rouleau résiduel d'une autre laize — recoupé en 1er dans le plan, optimiseur chute mini">♻ Rouleau à recouper</button>
       </div>
       <div class="rb-chutes" data-rb="chutes" style="margin-top:8px"></div>
+      <div class="rb-recuts" data-rb="recuts"></div>
     </div>
   </div>
 
@@ -2418,6 +2431,18 @@ function importPlanToFiche(opts){
           }
         });
       }else{
+        // Bobines ROULEAU CHUTE en 1er : lignes de fiche à part entière, avec
+        // leur PROPRE laize (celle du rouleau). Le ✓ coupée de l'opérateur les
+        // compte dans la production comme n'importe quelle bobine.
+        (c.recutGroups||[]).forEach(g=>{
+          for(let k=0;k<g.count;k++){
+            const lbl=(multi&&c.ref?c.ref+' · ':'')+'BOB-'+String(bi).padStart(3,'0');
+            addFicheLine({label:lbl, conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + '),
+              ref:c.ref||'', useful:g.rollW, blade:c.blade, machine:c.machine||'',
+              chuteNote:'♻ ROULEAU CHUTE '+fmt(g.rollW)+' mm — À RECOUPER EN 1ER (avant les bobines mères)'});
+            bi++;
+          }
+        });
         c.planGroups.forEach(g=>{
           const chuteNote=g.chute?('✂ '+Object.entries(g.chute).map(([w,q])=>q+'×'+fmt(Number(w))).join(' + ')+' mm pris dans chute stock (déjà en stock, ne pas découper)'):'';
           for(let k=0;k<g.count;k++){
@@ -2651,6 +2676,29 @@ function addPlanChuteTo(btn){
   const cont=block&&block.querySelector('.rb-chutes');
   if(cont){cont.appendChild(makePlanChuteRow());}
 }
+// ---- ROULEAUX À RECOUPER (chute d'une autre laize, recoupée en 1er) ----
+// Un rouleau = une laize résiduelle (ex. 600 mm) à RECOUPER avant la bobine
+// mère. Saisie : qty × largeur (qty = nb de rouleaux identiques). Longueur
+// supposée suffisante (≥ longueur commande). Pas de perte bords sur le rouleau ;
+// la lame est celle de la réf (donc de la machine sélectionnée).
+// Lot 1 : UI + sérialisation uniquement — la prise en compte moteur arrive au lot 2.
+function makePlanRecutRow(width='',qty='1'){
+  const div=document.createElement('div');
+  div.className='rb-recut-row';
+  div.innerHTML=`<span style="color:#5eead4;font-weight:700;font-size:14px">♻</span>
+    <input type="text" data-ct="rq" placeholder="1" value="${qty}" inputmode="numeric" oninput="debouncedRecalcPlan()" style="max-width:70px">
+    <span class="order-lbl">×</span>
+    <input type="text" data-ct="rw" placeholder="600" value="${width}" inputmode="decimal" oninput="debouncedRecalcPlan()" style="max-width:90px">
+    <span class="order-lbl">mm (laize)</span>
+    <span class="recut-tag">en 1er</span>
+    <button class="btn btn-red btn-sm" style="padding:7px 10px" onclick="this.parentElement.remove();recalcPlan()">✕</button>`;
+  return div;
+}
+function addPlanRecutTo(btn){
+  const block=btn.closest('.ref-block');
+  const cont=block&&block.querySelector('.rb-recuts');
+  if(cont){cont.appendChild(makePlanRecutRow());}
+}
 // Ajoute un nouveau bloc référence (même client). Largeur mère/pertes par défaut.
 let _refBlockSeq=1;
 function addRefBlock(){
@@ -2727,11 +2775,13 @@ function addRefBlock(){
     <input type="hidden" data-rb="largeur">
     <div class="section-title" style="margin:12px 0 8px">Largeurs à découper</div>
     <div class="rb-rows" data-rb="rows"></div>
-    <div class="flex mt8" style="gap:8px">
+    <div class="flex mt8" style="gap:8px;flex-wrap:wrap">
       <button class="btn btn-ghost btn-sm" onclick="addOrderRowTo(this)">+ Ajouter une ligne</button>
-      <button class="btn btn-orange btn-sm" onclick="addPlanChuteTo(this)" title="Bobineaux déjà en stock à la bonne largeur — déduits de la commande">✂ Chutes en stock</button>
+      <button class="btn btn-orange btn-sm" onclick="addPlanChuteTo(this)" title="Bobineaux déjà en stock à la bonne largeur — déduits de la commande">✂ Bobineaux en stock</button>
+      <button class="btn btn-recut btn-sm" onclick="addPlanRecutTo(this)" title="Rouleau résiduel d'une autre laize — recoupé en 1er dans le plan, optimiseur chute mini">♻ Rouleau à recouper</button>
     </div>
-    <div class="rb-chutes" data-rb="chutes" style="margin-top:8px"></div>`;
+    <div class="rb-chutes" data-rb="chutes" style="margin-top:8px"></div>
+    <div class="rb-recuts" data-rb="recuts"></div>`;
   document.getElementById('refBlocks').appendChild(block);
   // La machine reste à choisir (choix obligatoire). Les défauts perte bords/lame
   // seront appliqués par onRefMachineChange au moment du choix de la machine.
@@ -3052,6 +3102,49 @@ function getPlanChutesUsedByWidth(){
 }
 
 // ============================================================
+// ROULEAUX À RECOUPER — moteur (pur, testable hors DOM)
+// ============================================================
+// Un rouleau = une laize résiduelle (ex. 600 mm) recoupée EN 1ER, AVANT la
+// bobine mère. Pas de perte bords sur le rouleau ; lame = celle de la réf
+// (donc de la machine). Remplissage : bestPattern (chute mini, mix de laizes).
+// Seules les largeurs <= laize du rouleau sont éligibles. Jamais de
+// surproduction : on ne place que des pièces encore dues. Ordre : les rouleaux
+// sont servis APRÈS la déduction des bobineaux en stock (déjà coupés = gratuits),
+// et AVANT la bobine mère. Renvoie :
+//   {rolls:[{pattern,rollW}], remaining:[largeurs restantes], unusedRolls:n}
+function packRecutRolls(recuts,items,blade){
+  let counts=buildCounts(items);
+  const rolls=[]; let unusedRolls=0;
+  (recuts||[]).forEach(rc=>{
+    if(!(rc.width>0)||!(rc.qty>0)) return;
+    for(let i=0;i<rc.qty;i++){
+      const eligible={};
+      Object.entries(counts).forEach(([w,q])=>{ if(Number(w)<=rc.width&&q>0) eligible[w]=q; });
+      const pat=Object.keys(eligible).length?bestPattern(eligible,rc.width,blade):[];
+      if(!pat||!pat.length){ unusedRolls++; continue; }   // plus rien à y couper : rouleau conservé
+      pat.forEach(p=>{counts[p.width]-=p.qty; if(counts[p.width]<=0) delete counts[p.width];});
+      rolls.push({pattern:pat, rollW:rc.width});
+    }
+  });
+  const remaining=[];
+  Object.entries(counts).forEach(([w,q])=>{for(let k=0;k<q;k++) remaining.push(Number(w));});
+  remaining.sort((a,b)=>b-a);
+  return {rolls, remaining, unusedRolls};
+}
+// Regroupe les rouleaux identiques (même laize + même config) pour l'affichage.
+function groupRecutRolls(rolls){
+  const groups=[]; let i=0;
+  while(i<rolls.length){
+    const key=rolls[i].rollW+'|'+makeLabel(rolls[i].pattern);
+    let cnt=1;
+    while(i+cnt<rolls.length && (rolls[i+cnt].rollW+'|'+makeLabel(rolls[i+cnt].pattern))===key) cnt++;
+    groups.push({pattern:rolls[i].pattern, rollW:rolls[i].rollW, count:cnt});
+    i+=cnt;
+  }
+  return groups;
+}
+
+// ============================================================
 // MULTI-RÉFÉRENCES — modèle de données (Bloc 1)
 // ============================================================
 // Un plan = 1 client + une liste de "ref-groups". Chaque ref-group a sa
@@ -3096,7 +3189,14 @@ function getRefGroups(){
         const cq=Math.floor(parseNum(cr.querySelector('[data-ct="cq"]')?.value));
         if(cw>0&&cq>0) chutes.push({width:cw, qty:cq});
       });
-      groups.push({ref,longueur,film,veka,mother,edge,useful,blade,machine,rows,chutes});
+      // Rouleaux à recouper pour cette réf : laizes résiduelles recoupées en 1er.
+      const recuts=[];
+      bl.querySelectorAll('.rb-recut-row').forEach(rr=>{
+        const rw=parseNum(rr.querySelector('[data-ct="rw"]')?.value);
+        const rq=Math.floor(parseNum(rr.querySelector('[data-ct="rq"]')?.value));
+        if(rw>0&&rq>0) recuts.push({width:rw, qty:rq});
+      });
+      groups.push({ref,longueur,film,veka,mother,edge,useful,blade,machine,rows,chutes,recuts});
     });
     return groups;
   }
@@ -3112,14 +3212,15 @@ function getRefGroups(){
     blade:getBlade(),
     machine:currentMachine||'',
     rows:getOrderRows(),
-    chutes:[]
+    chutes:[],
+    recuts:[]
   }];
 }
 
 // Sérialise les blocs réf pour la sauvegarde (structure persistée).
 function serializeRefGroups(){
   return getRefGroups().map(g=>({
-    ref:g.ref, longueur:g.longueur, film:g.film||'', veka:g.veka||'', mother:g.mother, edge:g.edge, blade:g.blade, machine:g.machine||'', rows:g.rows, chutes:g.chutes||[]
+    ref:g.ref, longueur:g.longueur, film:g.film||'', veka:g.veka||'', mother:g.mother, edge:g.edge, blade:g.blade, machine:g.machine||'', rows:g.rows, chutes:g.chutes||[], recuts:g.recuts||[]
   }));
 }
 // Chaîne lisible des attributs film d'une réf (ex. "Imprimé · VEKA"). Vide si rien.
@@ -3201,6 +3302,8 @@ function restoreRefGroups(arr){
   (g0.rows||[]).forEach(r=>cont0.appendChild(makeOrderRow(r.qty,r.width,r.carton||'',false,r.mandrin||'')));
   const chutes0=document.querySelector('.ref-block .rb-chutes');
   if(chutes0){ chutes0.innerHTML=''; (g0.chutes||[]).forEach(ch=>chutes0.appendChild(makePlanChuteRow(ch.width,ch.qty))); }
+  const recuts0=document.querySelector('.ref-block .rb-recuts');
+  if(recuts0){ recuts0.innerHTML=''; (g0.recuts||[]).forEach(rc=>recuts0.appendChild(makePlanRecutRow(rc.width,rc.qty))); }
   // Blocs suivants
   for(let i=1;i<arr.length;i++){
     addRefBlock();
@@ -3216,6 +3319,8 @@ function restoreRefGroups(arr){
     (gi.rows||[]).forEach(r=>cont.appendChild(makeOrderRow(r.qty,r.width,r.carton||'',false,r.mandrin||'')));
     const chutesC=bl.querySelector('.rb-chutes');
     if(chutesC){ chutesC.innerHTML=''; (gi.chutes||[]).forEach(ch=>chutesC.appendChild(makePlanChuteRow(ch.width,ch.qty))); }
+    const recutsC=bl.querySelector('.rb-recuts');
+    if(recutsC){ recutsC.innerHTML=''; (gi.recuts||[]).forEach(rc=>recutsC.appendChild(makePlanRecutRow(rc.width,rc.qty))); }
   }
   updateCartonVisibility();
   updateVekaVisibility();
@@ -3234,7 +3339,12 @@ function packRefGroups(groups){
     const items=(g.useful>0&&valid.length)
       ? (hasChutes?reduceItemsByChutes(expandDemand(valid),chutesUsed):expandDemand(valid))
       : [];
-    const bobines=items.length?pack(items,g.useful,g.blade):[];
+    // Rouleaux à recouper : recoupés EN 1ER (avant la mère), sur le reliquat
+    // après bobineaux en stock. Lame de la réf (= machine), pas de perte bords.
+    const rr=packRecutRolls(g.recuts,items,g.blade);
+    const recutBobines=rr.rolls;
+    const recutGroups=groupRecutRolls(recutBobines);
+    const bobines=rr.remaining.length?pack(rr.remaining,g.useful,g.blade):[];
     let planGroups, chuteOrphan={};
     if(hasChutes){
       const asg=assignChutesForDisplay(bobines,chutesUsed);
@@ -3243,11 +3353,17 @@ function packRefGroups(groups){
     }else{
       planGroups=groupBobines(bobines,g.blade);
     }
+    // Stats : la matière des rouleaux recoupés est comptée (mère + rouleaux).
+    // Le solde d'un rouleau recoupé part en PERTE (déchet) — un résidu de
+    // résidu ne retourne pas en chute stockage.
+    const recutMat=recutBobines.reduce((s,r)=>s+r.rollW,0);
+    const recutUsed=recutBobines.reduce((s,r)=>s+calcStats(r.pattern,g.blade).total,0);
     const totalBobines=bobines.length;
-    const totalMat=totalBobines*g.useful;
-    const totalUsed=bobines.reduce((s,p)=>s+calcStats(p,g.blade).total,0);
+    const totalMat=totalBobines*g.useful+recutMat;
+    const totalUsed=bobines.reduce((s,p)=>s+calcStats(p,g.blade).total,0)+recutUsed;
     const pct=totalMat>0?((totalMat-totalUsed)/totalMat*100):0;
     return {...g, bobines, planGroups, oversize, chutesUsed, chuteOrphan,
+      recutBobines, recutGroups, recutUnused:rr.unusedRolls,
       stats:{totalBobines,totalMat,totalUsed,pct}};
   });
 }
@@ -3389,13 +3505,16 @@ function recalcPlan(){
   const chutesUsedKeys=Object.keys(chutesUsedAll);
   const chutesPieces=chutesUsedKeys.reduce((s,w)=>s+chutesUsedAll[w],0);
   const chutesChipLabel=chutesUsedKeys.map(w=>chutesUsedAll[w]+'×'+fmt(Number(w))).join(' + ');
+  // Rouleaux chute recoupés (toutes réfs)
+  const recutCountAll=computed.reduce((s,c)=>s+((c.recutBobines||[]).length),0);
   if(statsEl) statsEl.innerHTML=heavyBanner+oversizeBanner+`
     <div class="stat-chip">📦 <span>${totalBobines}</span> bobine${totalBobines>1?'s':''}</div>
     <div class="stat-chip">⚙ <span>${planGroups.length}</span> config${planGroups.length>1?'s':''}</div>
     ${multi?`<div class="stat-chip">🎞 <span>${computed.length}</span> références</div>`:`<div class="stat-chip">utile <span>${fmt(computed[0].useful)} mm</span></div>`}
     <div class="stat-chip ${perteCls}">🗑 Perte ${multi?'globale ':''}<span>${fmt(perteMm)} mm · ${pertePct.toFixed(1)}%</span></div>
     <div class="stat-chip pct-green">✂ Chute stock <span>${fmt(chuteStockMm)} mm</span></div>
-    ${chutesPieces>0?`<div class="stat-chip chip-chute">✂ Stock utilisé <span>${chutesChipLabel}</span></div>`:''}`;
+    ${chutesPieces>0?`<div class="stat-chip chip-chute">✂ Stock utilisé <span>${chutesChipLabel}</span></div>`:''}
+    ${recutCountAll>0?`<div class="stat-chip" style="border-color:#115e52;background:#06231c">♻ <span style="color:#5eead4">${recutCountAll} rouleau${recutCountAll>1?'x':''} chute recoupé${recutCountAll>1?'s':''}</span></div>`:''}`;
 
   // Rendu des cartes, réf par réf, avec bande de changement entre réfs.
   let html='';
@@ -3419,6 +3538,7 @@ function recalcPlan(){
         <span class="rb-meta">
           <span class="rb-m">laize ${fmt(useful)} mm</span>${mlPart}${filmPart}${vekaPart}
           <span class="rb-m">${c.stats.totalBobines} bobine${c.stats.totalBobines>1?'s':''}</span>
+          ${(c.recutBobines||[]).length?`<span class="rb-m" style="color:#5eead4">♻ ${c.recutBobines.length} rouleau${c.recutBobines.length>1?'x':''}</span>`:''}
           <span class="rb-m">perte ${c.stats.pct.toFixed(1)}%</span>
         </span>
       </div>`;
@@ -3428,6 +3548,23 @@ function recalcPlan(){
     const orphanKeys=Object.keys(orphan);
     if(orphanKeys.length){
       html+=`<div class="chute-band">✂ ${orphanKeys.map(w=>orphan[w]+'×'+fmt(Number(w))).join(' + ')} mm entièrement pris dans chute stock — aucune découpe sur bobine mère</div>`;
+    }
+    // Bobines ROULEAU CHUTE : à recouper EN 1ER, avant les bobines mères.
+    (c.recutGroups||[]).forEach(g=>{
+      const st=calcStats(g.pattern,blade);
+      const rest=Math.max(0,g.rollW-st.total);
+      bGlobal+=g.count;
+      html+=`<div class="bobine-card recut${mc}">
+        <div class="bc-count">♻ ${g.count>1?g.count+' rouleaux':'1 rouleau'}</div>
+        <div class="bc-body">
+          <div class="card-config">${esc(makeLabel(g.pattern))}</div>
+          <div class="card-sub">♻ rouleau chute ${fmt(g.rollW)} mm — À RECOUPER EN 1ER · ${fmt(st.total)} / ${fmt(g.rollW)} mm</div>
+        </div>
+        <span class="badge-recut">reste ${fmt(rest)} mm</span>
+      </div>`;
+    });
+    if(c.recutUnused>0){
+      html+=`<div class="recut-band">♻ ${c.recutUnused} rouleau${c.recutUnused>1?'x':''} à recouper non utilisé${c.recutUnused>1?'s':''} — demande déjà couverte (bobineaux stock / autres rouleaux) ou aucune laize ne rentre. Rouleau conservé en stock.</div>`;
     }
     c.planGroups.forEach((g,gi)=>{
       const st=calcStats(g.pattern,blade);
@@ -3466,6 +3603,10 @@ function togglePlanManual(){
 function enterPlanManual(){
   const computed=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
   if(!computed.length){ alert('Aucun plan à modifier — saisis d\'abord la commande.'); return; }
+  if(computed.some(c=>(c.recutBobines||[]).length||(c.recuts||[]).length)){
+    alert('✏️ Édition manuelle indisponible quand des rouleaux à recouper sont saisis.\n\nRetire les rouleaux (♻) pour éditer le plan à la main, ou garde le plan automatique.');
+    return;
+  }
   planManual=computed.map((c,ci)=>({
     ref:c.ref||'', useful:c.useful, blade:c.blade, longueur:c.longueur,
     mother:c.mother, edge:c.edge, film:c.film, veka:c.veka, machine:c.machine||'',
@@ -3641,23 +3782,52 @@ function chutePrintRecap(c){
   const lbl=ks.map(w=>cu[w]+'×'+fmt(Number(w))).join(' + ');
   return '<div style="margin:2px 0 14px;padding:7px 11px;border:1.5px solid #f59e0b;background:#fff7e6;border-radius:6px;color:#7a5200;font-size:12px">✂ <b>Chutes en stock utilisées :</b> '+lbl+' mm — bobineaux prélevés du stock, non découpés sur bobine mère.</div>';
 }
-function getPlanHTML(){
-  const autoGroups=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
-  // Si le plan a été modifié à la main, on imprime cette version.
-  const groups=planManual
-    ? planManual.map(r=>({ref:r.ref, useful:r.useful, blade:r.blade, longueur:r.longueur, mother:r.mother, edge:r.edge, film:r.film, veka:r.veka,
-        planGroups:r.bobines.map(b=>({count:Math.max(1,parseInt(b.count)||1), pattern:parseConf(b.conf)}))}))
-    : autoGroups;
-  const mn=getMachineLabel(currentMachine);
-  const client=document.getElementById('planClient').value||'—';
-  const typeCond=document.getElementById('planType').value||'—';
-  const palette=document.getElementById('planPalette').value||'—';
-  const etiquetage=document.getElementById('planEtiquetage').value||'—';
-  const cerclage=document.getElementById('planCerclage').value||'—';
-  const notesEmb=document.getElementById('planNotesEmballage').value||'';
+// Lignes ROULEAU CHUTE en tête de table imprimée (mockup validé) : fond
+// turquoise clair, config en gras, laize du rouleau (pas celle de la mère).
+function recutPrintRows(c,blade){
+  let out='';
+  (c&&c.recutGroups||[]).forEach(g=>{
+    const st=calcStats(g.pattern,blade), rest=Math.max(0,g.rollW-st.total);
+    out+=`<tr style="background:#e6fffa">
+      <td style="border-left:4px solid #0d9488;font-weight:700;color:#0f766e">♻ ${g.count>1?g.count+' rouleaux chute':'1 rouleau chute'}</td>
+      <td><b>${esc(makeLabel(g.pattern))}</b> — À RECOUPER EN 1ER</td>
+      <td>${st.laizes}</td>
+      <td>${fmt(st.total)} / ${fmt(g.rollW)}</td>
+      <td>reste ${fmt(rest)} mm</td></tr>`;
+  });
+  return out;
+}
+// Récap rouleaux imprimable pour une réf (utilisés + inutilisés). Vide si aucun.
+function recutPrintRecap(c){
+  if(!c) return '';
+  const used=(c.recutBobines||[]).length;
+  const unused=c.recutUnused||0;
+  const box=t=>'<div style="margin:2px 0 14px;padding:7px 11px;border:1.5px solid #0d9488;background:#e6fffa;border-radius:6px;color:#0f766e;font-size:12px">'+t+'</div>';
+  let out='';
+  if(used){
+    const mm=c.recutBobines.reduce((s,r)=>s+r.rollW,0);
+    out+=box(`♻ <b>${used} rouleau${used>1?'x':''} chute (${fmt(mm)} mm) recoupé${used>1?'s':''} en 1er</b> — le reste du rouleau part en déchet.`);
+  }
+  if(unused){
+    out+=box(`♻ <b>${unused} rouleau${unused>1?'x':''} à recouper non utilisé${unused>1?'s':''}</b> — demande déjà couverte. Rouleau conservé en stock.`);
+  }
+  return out;
+}
+// ============================================================
+// IMPRESSION PLAN — builder COMMUN
+// ============================================================
+// Utilisé par getPlanHTML (plan en cours) ET printSavedPlan (plan figé de
+// Données > Plans). Ces deux fonctions dupliquaient ~80 lignes identiques :
+// toute évolution devait être faite deux fois (cause de l'oubli des rouleaux
+// dans printSavedPlan, et du récap mandrins absent sur plan manuel sauvegardé).
+// Désormais UNE seule source. o = {groups, mandrinGroups, mn, client,
+//   refLabelFallback, motherFallback, typeCond, palette, etiquetage, cerclage,
+//   notesEmb, cmdInfoHtml}. Toutes les valeurs texte sont échappées.
+function buildPlanPrintHTML(o){
+  const groups=o.groups||[];
   const multi=groups.length>1;
   const mono=groups[0]||{};
-  const refLabel=multi?groups.map(c=>c.ref||'?').join(' + '):(mono.ref||document.getElementById('planRef').value||'—');
+  const refLabel=multi?groups.map(c=>c.ref||'?').join(' + '):(mono.ref||o.refLabelFallback||'—');
 
   // Une table par référence (chacune sa laize utile / sa lame).
   let sections='';
@@ -3669,7 +3839,7 @@ function getPlanHTML(){
       sections+=`<div style="margin:16px 0 4px;border:2px solid #b91c1c;background:#fee2e2;color:#b91c1c;font-weight:800;font-size:13px;letter-spacing:.04em;padding:8px 12px;text-align:center">⚙ CHANGEMENT DE MACHINE — ${esc(_prevMachLbl)} → ${esc(_curMachLbl)}</div>`;
     }
     if(_curMachLbl)_prevMachLbl=_curMachLbl;
-    let tRows='';
+    let tRows=recutPrintRows(c,blade);
     c.planGroups.forEach((g,gi)=>{
       const st=calcStats(g.pattern,blade),waste=useful-st.total,isLast=gi===c.planGroups.length-1;
       tRows+=`<tr style="${isLast?'background:#fffbea;font-style:italic':''}">
@@ -3683,13 +3853,13 @@ function getPlanHTML(){
       const attr=filmAttrStr(c); const attrPart=attr?` · <b>${esc(attr)}</b>`:'';
       sections+=`<h3 style="font-size:14px;margin:18px 0 6px;color:#5b21b6">🎞 ${esc(c.ref||('Référence '+(ci+1)))} — bobine mère ${fmt(c.mother)} mm · utile ${fmt(useful)} mm · lame ${fmt(blade)} mm${(()=>{const _m=getMachineLabel(c.machine||'');return _m?' · ⚙ '+esc(_m):'';})()}${c.longueur?` · ${esc(String(c.longueur))} ml`:''}${attrPart}</h3>`;
     }
-    sections+=`<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr>${tRows}</table>`+chutePrintRecap(c);
+    sections+=`<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr>${tRows}</table>`+chutePrintRecap(c)+recutPrintRecap(c);
   });
   if(!groups.length) sections='<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr></table>';
 
   const metaTech=multi
-    ? `Machine : ${mn} · ${groups.length} références · Date : ${today()}`
-    : `Machine : ${mn} · Bobine mère : ${fmt(mono.mother||parseNum(document.getElementById('motherWidth').value))} mm · Utile : ${fmt(mono.useful||0)} mm · Lame : ${fmt(mono.blade||0)} mm · Date : ${today()}`;
+    ? `Machine : ${o.mn} · ${groups.length} références · Date : ${today()}`
+    : `Machine : ${o.mn} · Bobine mère : ${fmt(mono.mother||o.motherFallback||0)} mm · Utile : ${fmt(mono.useful||0)} mm · Lame : ${fmt(mono.blade||0)} mm · Date : ${today()}`;
   const monoAttr=multi?'':filmAttrStr(mono);
 
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Plan STEP</title>
@@ -3698,11 +3868,34 @@ function getPlanHTML(){
   table{border-collapse:collapse;width:100%;margin-bottom:6px}th,td{border:1px solid #bbb;padding:7px 11px;text-align:left}
   th{background:#f0f0f0;font-size:12px;text-transform:uppercase}@media print{body{padding:8px}}</style></head><body>
   <h2>Plan de découpe — STEP International</h2>
-  <div class="meta">Client : <b>${client}</b> · Réf : <b>${refLabel}</b>${monoAttr?` · Film : <b>${esc(monoAttr)}</b>`:''}<br>
+  <div class="meta">Client : <b>${esc(o.client)}</b> · Réf : <b>${esc(refLabel)}</b>${monoAttr?` · Film : <b>${esc(monoAttr)}</b>`:''}${o.cmdInfoHtml||''}<br>
   ${metaTech}<br>
-  Packaging : Palette <b>${palette}</b> · Type <b>${typeCond}</b> · Étiquetage <b>${etiquetage}</b> · Cerclage <b>${cerclage}</b>${notesEmb?'<br><em style="font-size:11px;color:#666">'+notesEmb.replace(/\n/g,' | ')+'</em>':''}</div>
+  Packaging : Palette <b>${esc(o.palette)}</b> · Type <b>${esc(o.typeCond)}</b> · Étiquetage <b>${esc(o.etiquetage)}</b> · Cerclage <b>${esc(o.cerclage)}</b>${o.notesEmb?'<br><em style="font-size:11px;color:#666">'+esc(o.notesEmb).replace(/\n/g,' | ')+'</em>':''}</div>
   ${sections}
-  ${mandrinRecapHTML(autoGroups,client)}</body></html>`;
+  ${mandrinRecapHTML(o.mandrinGroups||groups,o.client)}</body></html>`;
+}
+function getPlanHTML(){
+  const autoGroups=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
+  // Si le plan a été modifié à la main, on imprime cette version.
+  const groups=planManual
+    ? planManual.map(r=>({ref:r.ref, useful:r.useful, blade:r.blade, longueur:r.longueur, mother:r.mother, edge:r.edge, film:r.film, veka:r.veka, machine:r.machine||'',
+        planGroups:r.bobines.map(b=>({count:Math.max(1,parseInt(b.count)||1), pattern:parseConf(b.conf)}))}))
+    : autoGroups;
+  const numCmd=document.getElementById('planNumCmd')?.value||'';
+  return buildPlanPrintHTML({
+    groups,
+    mandrinGroups:autoGroups,   // mandrins lus depuis la saisie (rows), même en plan manuel
+    mn:getMachineLabel(currentMachine),
+    client:document.getElementById('planClient').value||'—',
+    refLabelFallback:document.getElementById('planRef').value||'—',
+    motherFallback:parseNum(document.getElementById('motherWidth').value),
+    typeCond:document.getElementById('planType').value||'—',
+    palette:document.getElementById('planPalette').value||'—',
+    etiquetage:document.getElementById('planEtiquetage').value||'—',
+    cerclage:document.getElementById('planCerclage').value||'—',
+    notesEmb:document.getElementById('planNotesEmballage').value||'',
+    cmdInfoHtml:(numCmd&&numCmd!=='—')?` · N° Cmd : <b>${esc(numCmd)}</b>`:''
+  });
 }
 // Imprime un plan SAUVEGARDÉ (Données > Plans) sans le charger dans l'éditeur.
 // Reconstruit le HTML depuis l'objet save (refGroups), comme getPlanHTML mais
@@ -3715,65 +3908,29 @@ function printSavedPlan(id){
     : [{ref:s.ref,longueur:s.longueur,mother:parseNum(s.mother),edge:parseNum(s.edgeLoss),blade:parseNum(s.blade),rows:s.rows||[]}];
   const grpInput=arr.map(g=>{
     const mother=parseNum(g.mother), edge=parseNum(g.edge!=null?g.edge:s.edgeLoss);
-    return {ref:g.ref||'', longueur:g.longueur||'', film:g.film||'', veka:g.veka||'', mother, edge, useful:Math.max(0,mother-edge), blade:parseNum(g.blade!=null?g.blade:s.blade), machine:g.machine||'', rows:g.rows||[], chutes:g.chutes||[]};
+    return {ref:g.ref||'', longueur:g.longueur||'', film:g.film||'', veka:g.veka||'', mother, edge, useful:Math.max(0,mother-edge), blade:parseNum(g.blade!=null?g.blade:s.blade), machine:g.machine||'', rows:g.rows||[], chutes:g.chutes||[], recuts:g.recuts||[]};
   });
+  const autoGroups=packRefGroups(grpInput).filter(c=>c.rows.length);
   // Plan manuel sauvegardé → on l'utilise tel quel ; sinon recalcul automatique.
   const groups=Array.isArray(s.planManual)&&s.planManual.length
     ? s.planManual.map(r=>({ref:r.ref, useful:r.useful, blade:r.blade, longueur:r.longueur, mother:r.mother, edge:r.edge, film:r.film||'', veka:r.veka||'', machine:r.machine||'',
         planGroups:r.bobines.map(b=>({count:Math.max(1,parseInt(b.count)||1), pattern:parseConf(b.conf)}))
       }))
-    : packRefGroups(grpInput).filter(c=>c.rows.length);
-  const mn=getMachineLabel(s.machine||currentMachine);
-  const client=s.client||'—';
-  const typeCond=s.typeCond||s.carton||'—', palette=s.palette||'—';
-  const etiquetage=s.etiquetage||s.etiquette||'—', cerclage=s.cerclage||'—';
-  const notesEmb=s.notesEmballage||'';
-  const multi=groups.length>1;
-  const mono=groups[0]||{};
-  const refLabel=multi?groups.map(c=>c.ref||'?').join(' + '):(mono.ref||s.ref||'—');
-  let sections='';
-  let _prevMachLbl=null; // MINEUR-7 : bande changement de machine, comme en fiche
-  groups.forEach((c,ci)=>{
-    const useful=c.useful, blade=c.blade;
-    const _curMachLbl=getMachineLabel(c.machine||'')||'';
-    if(multi&&ci>0&&_prevMachLbl&&_curMachLbl&&_curMachLbl!==_prevMachLbl){
-      sections+=`<div style="margin:16px 0 4px;border:2px solid #b91c1c;background:#fee2e2;color:#b91c1c;font-weight:800;font-size:13px;letter-spacing:.04em;padding:8px 12px;text-align:center">⚙ CHANGEMENT DE MACHINE — ${esc(_prevMachLbl)} → ${esc(_curMachLbl)}</div>`;
-    }
-    if(_curMachLbl)_prevMachLbl=_curMachLbl;
-    let tRows='';
-    c.planGroups.forEach((g,gi)=>{
-      const st=calcStats(g.pattern,blade),waste=useful-st.total,isLast=gi===c.planGroups.length-1;
-      tRows+=`<tr style="${isLast?'background:#fffbea;font-style:italic':''}">
-        <td>${g.count>1?g.count+' bobines':'1 bobine'}</td>
-        <td>${chutePrintConfig(g.pattern,g.chute)}</td>
-        <td>${st.laizes}</td>
-        <td>${fmt(st.total)} / ${fmt(useful)}</td>
-        <td>${isLast?'Solde '+fmt(waste)+' mm':fmt(waste)+' mm'}</td></tr>`;
-    });
-    if(multi){
-      const attr=filmAttrStr(c); const attrPart=attr?` · <b>${esc(attr)}</b>`:'';
-      sections+=`<h3 style="font-size:14px;margin:18px 0 6px;color:#5b21b6">🎞 ${esc(c.ref||('Référence '+(ci+1)))} — bobine mère ${fmt(c.mother)} mm · utile ${fmt(useful)} mm · lame ${fmt(blade)} mm${(()=>{const _m=getMachineLabel(c.machine||'');return _m?' · ⚙ '+esc(_m):'';})()}${c.longueur?` · ${esc(String(c.longueur))} ml`:''}${attrPart}</h3>`;
-    }
-    sections+=`<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr>${tRows}</table>`+chutePrintRecap(c);
-  });
-  if(!groups.length) sections='<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr></table>';
-  const metaTech=multi
-    ? `Machine : ${mn} · ${groups.length} références · Date : ${today()}`
-    : `Machine : ${mn} · Bobine mère : ${fmt(mono.mother||parseNum(s.mother))} mm · Utile : ${fmt(mono.useful||0)} mm · Lame : ${fmt(mono.blade||0)} mm · Date : ${today()}`;
-  const monoAttr=multi?'':filmAttrStr(mono);
-  const cmdInfo=(s.numCmd&&s.numCmd!=='—')?` · N° Cmd : <b>${esc(s.numCmd)}</b>`:'';
-  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Plan STEP</title>
-  <style>body{font-family:Arial,sans-serif;padding:24px;font-size:13px}h2{font-size:18px;margin-bottom:4px}
-  .meta{color:#555;font-size:12px;margin-bottom:16px;line-height:1.8}
-  table{border-collapse:collapse;width:100%;margin-bottom:6px}th,td{border:1px solid #bbb;padding:7px 11px;text-align:left}
-  th{background:#f0f0f0;font-size:12px;text-transform:uppercase}@media print{body{padding:8px}}</style></head><body>
-  <h2>Plan de découpe — STEP International</h2>
-  <div class="meta">Client : <b>${esc(client)}</b> · Réf : <b>${esc(refLabel)}</b>${monoAttr?` · Film : <b>${esc(monoAttr)}</b>`:''}${cmdInfo}<br>
-  ${metaTech}<br>
-  Packaging : Palette <b>${esc(palette)}</b> · Type <b>${esc(typeCond)}</b> · Étiquetage <b>${esc(etiquetage)}</b> · Cerclage <b>${esc(cerclage)}</b>${notesEmb?'<br><em style="font-size:11px;color:#666">'+esc(notesEmb).replace(/\n/g,' | ')+'</em>':''}</div>
-  ${sections}
-  ${mandrinRecapHTML(groups,client)}</body></html>`;
-  openPrintWindow(html);
+    : autoGroups;
+  openPrintWindow(buildPlanPrintHTML({
+    groups,
+    mandrinGroups:autoGroups,   // mandrins lus depuis les rows, même si plan manuel sauvegardé
+    mn:getMachineLabel(s.machine||currentMachine),
+    client:s.client||'—',
+    refLabelFallback:s.ref||'—',
+    motherFallback:parseNum(s.mother),
+    typeCond:s.typeCond||s.carton||'—',
+    palette:s.palette||'—',
+    etiquetage:s.etiquetage||s.etiquette||'—',
+    cerclage:s.cerclage||'—',
+    notesEmb:s.notesEmballage||'',
+    cmdInfoHtml:(s.numCmd&&s.numCmd!=='—')?` · N° Cmd : <b>${esc(s.numCmd)}</b>`:''
+  }));
 }
 function printEtiquette(d){
   const html=`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Étiquette solde</title>
@@ -4751,7 +4908,8 @@ async function saveCommandeFiche(rows,useful,blade,opts){
       if(fichesCache.length>1000) fichesCache=fichesCache.slice(0,1000);
       if(tempsRef){tempsCache.unshift({_id:tempsRef.id,...tempsEntry});if(tempsCache.length>2000) tempsCache=tempsCache.slice(0,2000);}
       await logAudit('create','fiches',ficheRef.id,`${client||''} / ${ref||''}${numCmd&&numCmd!=='—'?' / Cmd '+numCmd:''}${opts.modifié?' [MODIFIÉE]':''}`);
-      chronoReset();
+      chronoReset();          // stoppe l'autosave (timer)
+      clearCurrentDraft();    // …puis purge les brouillons AUTO (fiche + plan)
       // #5 : si la fiche vient d'un plan sauvegardé chargé, on retire ce plan de Données→Plans (archive douce)
       if(loadedSaveId){
         try{
@@ -7056,7 +7214,16 @@ function persistDrafts(arr){
     }
   }
 }
-function clearCurrentDraft(){ /* brouillons explicites uniquement — rien à nettoyer après envoi réussi */ }
+function clearCurrentDraft(){
+  // Envoi réussi (fiche en base) : on purge les brouillons AUTO — la fiche
+  // auto (d_autosave) ET le plan auto (d_autosave_plan) ne représentent plus
+  // que cet envoi déjà consommé. Les brouillons MANUELS (💾) et "non envoyé"
+  // sont conservés : ce sont des parkings volontaires, pas des restes.
+  try{
+    persistDrafts(loadDrafts().filter(d=>d.id!==AUTOSAVE_ID && d.id!==PLAN_AUTOSAVE_ID));
+    _planAutosaveLast='';   // ne pas recréer le brouillon plan au prochain tick
+  }catch(e){}
+}
 
 function serializeFicheState(){
   const g=id=>document.getElementById(id);
