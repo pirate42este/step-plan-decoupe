@@ -92,6 +92,12 @@ button{cursor:pointer;font-family:inherit}
 select.mach-feba{border-color:var(--feba);color:var(--feba);background:#1a2e47;font-weight:700}
 select.mach-maveg{border-color:var(--maveg);color:var(--maveg);background:#142a1a;font-weight:700}
 select.mach-cevenini{border-color:var(--cevenini);color:var(--cevenini);background:#1f1535;font-weight:700}
+/* VEKA : Profilé = cyan, VEKA = magenta (distincts des couleurs machine) */
+select.veka-profile{border-color:#22d3ee;color:#22d3ee;background:#0c2e33;font-weight:700}
+select.veka-veka{border-color:#e879f9;color:#e879f9;background:#2e0c30;font-weight:700}
+.vbadge{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:800;padding:2px 9px;border-radius:6px;text-transform:uppercase;letter-spacing:.03em;white-space:nowrap}
+.vbadge-profile{background:#0c2e33;color:#22d3ee;border:1px solid #155e6b}
+.vbadge-veka{background:#2e0c30;color:#e879f9;border:1px solid #7a2e7e}
 /* BANDE REFERENCE — couleur = machine */
 .ref-band{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-radius:11px;padding:10px 14px;margin:18px 0 10px;background:var(--section);border:1px solid var(--border);border-left:5px solid var(--mc,var(--border2))}
 .ref-band.feba{--mc:var(--feba)} .ref-band.maveg{--mc:var(--maveg)} .ref-band.cevenini{--mc:var(--cevenini)}
@@ -115,6 +121,15 @@ select.mach-cevenini{border-color:var(--cevenini);color:var(--cevenini);backgrou
 .pct-green{border-color:#1e5c30;background:#10271a}.pct-green span{color:var(--green)}
 .pct-orange{border-color:#7a5200;background:#2a1f08}.pct-orange span{color:var(--orange)}
 .pct-red{border-color:#7a2222;background:#2a1010}.pct-red span{color:var(--red)}
+/* CHUTES EN STOCK */
+.chip-chute{border-color:#7a5200;background:#2a1f08}.chip-chute span{color:var(--orange)}
+.chute-strike{color:var(--muted);text-decoration:line-through;font-weight:600}
+.chute-arrow{color:var(--orange);font-weight:800;margin:0 4px}
+.chute-note{color:var(--orange);font-weight:700}
+.chute-band{background:#2a1f08;border:1px solid #7a5200;border-radius:10px;padding:8px 13px;margin:0 0 9px;font-size:13px;color:var(--orange);font-weight:600}
+.rb-chute-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.rb-chute-row input{flex:0 0 auto}
+.fiche-chute-note{font-size:12px;font-weight:700;color:var(--orange);background:#2a1f08;border:1px solid #7a5200;border-radius:6px;padding:4px 9px;margin-top:6px;display:inline-block}
 .counter-row{display:flex;align-items:center;gap:12px;margin-bottom:10px}
 .counter-text{font-size:13px;color:var(--muted);white-space:nowrap}
 .counter-text strong{color:var(--text)}
@@ -420,9 +435,11 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
       <input type="hidden" id="planLargeur" data-rb="largeur">
       <div class="section-title" style="margin:12px 0 8px">Largeurs à découper</div>
       <div class="rb-rows" data-rb="rows"></div>
-      <div class="flex mt8">
+      <div class="flex mt8" style="gap:8px">
         <button class="btn btn-ghost btn-sm" onclick="addOrderRowTo(this)">+ Ajouter une ligne</button>
+        <button class="btn btn-orange btn-sm" onclick="addPlanChuteTo(this)" title="Bobineaux déjà en stock à la bonne largeur — déduits de la commande">✂ Chutes en stock</button>
       </div>
+      <div class="rb-chutes" data-rb="chutes" style="margin-top:8px"></div>
     </div>
   </div>
 
@@ -533,10 +550,6 @@ body.atelier .machine-btn{font-size:17px;padding:16px}
         <label>Perte lame (mm)</label>
         <input type="text" id="fBlade" inputmode="decimal" oninput="syncFicheParams('blade')">
       </div>
-    </div>
-    <div style="margin-top:12px">
-      <button class="btn btn-orange btn-sm" onclick="addChuteReel()" title="Ajouter une chute du stock à utiliser dans le plan">✂ Chute — utiliser une chute du stock</button>
-      <div id="ficheChutesList" style="margin-top:8px"></div>
     </div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button class="btn btn-blue" style="flex:1" onclick="applyFichePlanChange()">🔄 Changement plan</button>
@@ -1792,10 +1805,6 @@ function csvCell(v){
 let currentMachine = 'feba';
 let ficheMachine = 'feba';
 let ficheMachine2 = ''; // machine de l'opérateur 2 (si différente)
-// Chutes du stock à utiliser dans le plan : [{width, ref}]. Consommées en
-// priorité au « Changement plan ». La longueur est supposée suffisante (comme
-// les bobines mères) : seule la largeur limite le nombre de laizes.
-let ficheChutes = [];
 let selectedIni = '';
 let selectedIni2 = '';
 let planGroups = [];
@@ -2392,7 +2401,6 @@ function importPlanToFiche(opts){
     computed.forEach((c,ci)=>{
       if(multi){ insertFicheRefSeparator(c.ref||('Référence '+(ci+1)), c.useful, c.longueur, c.machine, prevMach); if(c.machine) prevMach=c.machine; }
       const man=planManual&&planManual[ci];
-      const myChutes=(ficheChutes||[]).filter(ch=>(ch.ref||'')===(c.ref||''));
       if(man){
         // Plan modifié à la main : il fait foi, on génère les bobines telles
         // que saisies (les chutes éventuelles y sont déjà incluses par l'opérateur).
@@ -2405,37 +2413,13 @@ function importPlanToFiche(opts){
             bi++;
           }
         });
-      }else if(myChutes.length){
-        // (#2) Consommer d'abord les chutes du stock (1 bobine par chute, laize
-        // utile = largeur chute − perte bords), puis recalculer le reste sur les
-        // bobines mères pleines. Algo de packing inchangé : couche d'allocation.
-        const counts=buildCounts(expandDemand(c.rows.filter(r=>r.width<=c.useful)));
-        myChutes.forEach(ch=>{
-          const usefulC=Math.max(0,(ch.width||0)-(c.edge||0));
-          if(usefulC<=0) return;
-          const pat=bestPattern(counts,usefulC,c.blade);
-          if(!pat||!pat.length) return;
-          pat.forEach(p=>{counts[p.width]=(counts[p.width]||0)-p.qty; if(counts[p.width]<=0) delete counts[p.width];});
-          addFicheLine({label:(multi&&c.ref?c.ref+' · ':'')+'CHUTE '+fmt(ch.width),
-            conf:pat.map(p=>p.qty+'×'+p.width).join(' + '),
-            ref:c.ref||'', useful:usefulC, blade:c.blade, machine:c.machine||''});
-        });
-        const remain=[]; Object.entries(counts).forEach(([w,q])=>{for(let i=0;i<q;i++) remain.push(Number(w));});
-        const groups=groupBobines(pack(remain.sort((a,b)=>b-a),c.useful,c.blade),c.blade);
-        groups.forEach(g=>{
-          for(let k=0;k<g.count;k++){
-            addFicheLine({label:(multi&&c.ref?c.ref+' · ':'')+'BOB-'+String(bi).padStart(3,'0'),
-              conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + '),
-              ref:c.ref||'', useful:c.useful, blade:c.blade, machine:c.machine||''});
-            bi++;
-          }
-        });
       }else{
         c.planGroups.forEach(g=>{
+          const chuteNote=g.chute?('✂ '+Object.entries(g.chute).map(([w,q])=>q+'×'+fmt(Number(w))).join(' + ')+' mm pris dans chute stock (déjà en stock, ne pas découper)'):'';
           for(let k=0;k<g.count;k++){
             const lbl=(multi&&c.ref?c.ref+' · ':'')+'BOB-'+String(bi).padStart(3,'0');
             addFicheLine({label:lbl, conf:g.pattern.map(p=>p.qty+'×'+p.width).join(' + '),
-              ref:c.ref||'', useful:c.useful, blade:c.blade, machine:c.machine||''});
+              ref:c.ref||'', useful:c.useful, blade:c.blade, machine:c.machine||'', chuteNote});
             bi++;
           }
         });
@@ -2556,6 +2540,7 @@ function updateVekaVisibility(){
     el.style.display=show?'':'none';
     if(!show){const sel=el.querySelector('[data-rb="veka"]'); if(sel) sel.value='';}
   });
+  if(typeof colorVekaSelects==='function') colorVekaSelects();
 }
 
 function onClientChange(){
@@ -2643,6 +2628,24 @@ function addOrderRowTo(btn){
   const cont=block&&block.querySelector('.rb-rows');
   if(cont){cont.appendChild(makeOrderRow());updateCartonVisibility();}
 }
+// ---- CHUTES EN STOCK (saisie dans le plan, par référence) ----
+// Une chute = un bobineau déjà à la bonne largeur, déduit de la commande au calcul.
+function makePlanChuteRow(width='',qty=''){
+  const div=document.createElement('div');
+  div.className='rb-chute-row';
+  div.innerHTML=`<span style="color:var(--orange);font-weight:700;font-size:14px">✂</span>
+    <input type="text" data-ct="cw" placeholder="30" value="${width}" inputmode="decimal" oninput="debouncedRecalcPlan()" style="max-width:90px">
+    <span class="order-lbl">mm ×</span>
+    <input type="text" data-ct="cq" placeholder="2" value="${qty}" inputmode="numeric" oninput="debouncedRecalcPlan()" style="max-width:70px">
+    <span class="order-lbl">en stock</span>
+    <button class="btn btn-red btn-sm" style="padding:7px 10px" onclick="this.parentElement.remove();recalcPlan()">✕</button>`;
+  return div;
+}
+function addPlanChuteTo(btn){
+  const block=btn.closest('.ref-block');
+  const cont=block&&block.querySelector('.rb-chutes');
+  if(cont){cont.appendChild(makePlanChuteRow());}
+}
 // Ajoute un nouveau bloc référence (même client). Largeur mère/pertes par défaut.
 let _refBlockSeq=1;
 function addRefBlock(){
@@ -2719,9 +2722,11 @@ function addRefBlock(){
     <input type="hidden" data-rb="largeur">
     <div class="section-title" style="margin:12px 0 8px">Largeurs à découper</div>
     <div class="rb-rows" data-rb="rows"></div>
-    <div class="flex mt8">
+    <div class="flex mt8" style="gap:8px">
       <button class="btn btn-ghost btn-sm" onclick="addOrderRowTo(this)">+ Ajouter une ligne</button>
-    </div>`;
+      <button class="btn btn-orange btn-sm" onclick="addPlanChuteTo(this)" title="Bobineaux déjà en stock à la bonne largeur — déduits de la commande">✂ Chutes en stock</button>
+    </div>
+    <div class="rb-chutes" data-rb="chutes" style="margin-top:8px"></div>`;
   document.getElementById('refBlocks').appendChild(block);
   // La machine reste à choisir (choix obligatoire). Les défauts perte bords/lame
   // seront appliqués par onRefMachineChange au moment du choix de la machine.
@@ -2953,6 +2958,90 @@ function groupBobines(bobines,blade){
 }
 
 // ============================================================
+// CHUTES EN STOCK — helpers (purs, testables hors DOM)
+// ============================================================
+// Une chute = un bobineau déjà à la largeur cible. Elle remplace 1 pièce de
+// cette largeur dans la commande (déduction directe, pas de re-refente).
+//
+// computeChutesUsed : combien de chutes sont réellement utilisables, plafonné
+// par la demande de chaque largeur (≤ laize utile). Renvoie {width:qty}.
+function computeChutesUsed(group){
+  if(!group) return {};
+  const useful=group.useful||0;
+  const demand={};
+  (group.rows||[]).forEach(r=>{ if(r.width<=useful) demand[r.width]=(demand[r.width]||0)+r.qty; });
+  const used={};
+  (group.chutes||[]).forEach(ch=>{
+    if(!(ch.width>0)||!(ch.qty>0)) return;
+    const cap=(demand[ch.width]||0)-(used[ch.width]||0);   // jamais plus que la demande restante
+    const use=Math.min(ch.qty, Math.max(0,cap));
+    if(use>0) used[ch.width]=(used[ch.width]||0)+use;
+  });
+  return used;
+}
+// Réduit la liste d'items (largeurs expansées) en retirant les chutes utilisées.
+function reduceItemsByChutes(items,used){
+  const counts=buildCounts(items);
+  Object.entries(used).forEach(([w,q])=>{ counts[w]=Math.max(0,(counts[w]||0)-q); if(counts[w]<=0) delete counts[w]; });
+  const out=[];
+  Object.entries(counts).forEach(([w,q])=>{ for(let i=0;i<q;i++) out.push(Number(w)); });
+  return out.sort((a,b)=>b-a);
+}
+// Attribue chaque chute à UNE bobine (la 1re contenant la largeur) pour l'affichage
+// « avant → après ». Renvoie {bobines:[{pattern,chute|null}], orphan:{width:qty}}.
+// orphan = chutes dont la largeur n'apparaît dans aucune bobine restante
+// (toute la demande de cette largeur venait du stock).
+function assignChutesForDisplay(bobines,used){
+  const list=bobines.map(p=>({pattern:p, chute:null}));
+  const orphan={};
+  Object.entries(used).forEach(([w,q])=>{
+    const W=Number(w); let rem=q;
+    for(const b of list){
+      if(rem<=0) break;
+      const piece=b.pattern.find(x=>x.width===W);
+      if(!piece) continue;
+      if(!b.chute) b.chute={};
+      b.chute[W]=(b.chute[W]||0)+rem;   // tout sur la 1re bobine -> total « avant » exact
+      rem=0;
+    }
+    if(rem>0) orphan[W]=(orphan[W]||0)+rem;
+  });
+  return {bobines:list, orphan};
+}
+// Regroupe les bobines en gardant à part celles qui portent une chute (count=1).
+function groupBobinesWithChutes(list){
+  const groups=[]; let i=0;
+  while(i<list.length){
+    if(list[i].chute){ groups.push({pattern:list[i].pattern,count:1,chute:list[i].chute}); i++; continue; }
+    const lbl=makeLabel(list[i].pattern); let cnt=1;
+    while(i+cnt<list.length && !list[i+cnt].chute && makeLabel(list[i+cnt].pattern)===lbl) cnt++;
+    groups.push({pattern:list[i].pattern,count:cnt}); i+=cnt;
+  }
+  return groups;
+}
+// Libellé HTML d'une config avec annotation chute « avant → après » (option B).
+function configHtmlWithChute(pattern,chute){
+  if(!chute) return esc(makeLabel(pattern));
+  const parts=pattern.map(p=>{
+    if(chute[p.width]){
+      const before=p.qty+chute[p.width];
+      return `<span class="chute-strike">${before}×${p.width}</span><span class="chute-arrow">→</span><span class="chute-note">${p.qty}×${p.width}</span>`;
+    }
+    return esc(p.qty>1?p.qty+'×'+p.width:p.width+'mm');
+  });
+  return parts.join(' + ');
+}
+// Total chutes utilisées, agrégé par largeur sur toutes les réfs (pour écarts/PDF).
+function getPlanChutesUsedByWidth(){
+  const out={};
+  try{ (getRefGroups()||[]).forEach(g=>{
+    const u=computeChutesUsed(g);
+    Object.entries(u).forEach(([w,q])=>{ out[w]=(out[w]||0)+q; });
+  }); }catch(e){}
+  return out;
+}
+
+// ============================================================
 // MULTI-RÉFÉRENCES — modèle de données (Bloc 1)
 // ============================================================
 // Un plan = 1 client + une liste de "ref-groups". Chaque ref-group a sa
@@ -2990,7 +3079,14 @@ function getRefGroups(){
         const mandrin=(row.querySelector('[data-type="mandrin"]')?.value||'').trim();
         if(qty>0&&w>0){const o={qty,width:w};if(carton>0)o.carton=carton;if(mandrin)o.mandrin=mandrin;rows.push(o);}
       });
-      groups.push({ref,longueur,film,veka,mother,edge,useful,blade,machine,rows});
+      // Chutes en stock saisies pour cette réf : bobineaux déjà à la bonne largeur.
+      const chutes=[];
+      bl.querySelectorAll('.rb-chute-row').forEach(cr=>{
+        const cw=parseNum(cr.querySelector('[data-ct="cw"]')?.value);
+        const cq=Math.floor(parseNum(cr.querySelector('[data-ct="cq"]')?.value));
+        if(cw>0&&cq>0) chutes.push({width:cw, qty:cq});
+      });
+      groups.push({ref,longueur,film,veka,mother,edge,useful,blade,machine,rows,chutes});
     });
     return groups;
   }
@@ -3005,20 +3101,31 @@ function getRefGroups(){
     useful:getUseful(),
     blade:getBlade(),
     machine:currentMachine||'',
-    rows:getOrderRows()
+    rows:getOrderRows(),
+    chutes:[]
   }];
 }
 
 // Sérialise les blocs réf pour la sauvegarde (structure persistée).
 function serializeRefGroups(){
   return getRefGroups().map(g=>({
-    ref:g.ref, longueur:g.longueur, film:g.film||'', veka:g.veka||'', mother:g.mother, edge:g.edge, blade:g.blade, machine:g.machine||'', rows:g.rows
+    ref:g.ref, longueur:g.longueur, film:g.film||'', veka:g.veka||'', mother:g.mother, edge:g.edge, blade:g.blade, machine:g.machine||'', rows:g.rows, chutes:g.chutes||[]
   }));
 }
 // Chaîne lisible des attributs film d'une réf (ex. "Imprimé · VEKA"). Vide si rien.
 function filmAttrStr(g){
   if(!g) return '';
   return [g.film,g.veka].map(x=>(x||'').trim()).filter(Boolean).join(' · ');
+}
+// VEKA : classe couleur selon la valeur (Profilé = cyan, VEKA = magenta).
+function vekaClass(v){ return v==='Profilé'?'veka-profile':(v==='VEKA'?'veka-veka':''); }
+// Colore chaque <select> VEKA à la saisie selon son choix.
+function colorVekaSelects(){
+  document.querySelectorAll('[data-rb="veka"]').forEach(el=>{
+    el.classList.remove('veka-profile','veka-veka');
+    const cls=vekaClass(el.value);
+    if(cls) el.classList.add(cls);
+  });
 }
 // Applique un client sauvegardé au <select> client, en tolérant qu'il ne soit
 // plus exactement dans la liste (renommé, casse/espaces différents, retiré).
@@ -3082,6 +3189,8 @@ function restoreRefGroups(arr){
   const refSel=document.querySelector('.ref-block [data-rb="ref"]'); applySavedRef(refSel,g0.ref,client);
   const cont0=document.querySelector('.ref-block .rb-rows');
   (g0.rows||[]).forEach(r=>cont0.appendChild(makeOrderRow(r.qty,r.width,r.carton||'',false,r.mandrin||'')));
+  const chutes0=document.querySelector('.ref-block .rb-chutes');
+  if(chutes0){ chutes0.innerHTML=''; (g0.chutes||[]).forEach(ch=>chutes0.appendChild(makePlanChuteRow(ch.width,ch.qty))); }
   // Blocs suivants
   for(let i=1;i<arr.length;i++){
     addRefBlock();
@@ -3095,6 +3204,8 @@ function restoreRefGroups(arr){
     const cont=bl.querySelector('.rb-rows');
     cont.querySelectorAll('.order-row').forEach(r=>r.remove()); // addRefBlock met 2 lignes vides
     (gi.rows||[]).forEach(r=>cont.appendChild(makeOrderRow(r.qty,r.width,r.carton||'',false,r.mandrin||'')));
+    const chutesC=bl.querySelector('.rb-chutes');
+    if(chutesC){ chutesC.innerHTML=''; (gi.chutes||[]).forEach(ch=>chutesC.appendChild(makePlanChuteRow(ch.width,ch.qty))); }
   }
   updateCartonVisibility();
   updateVekaVisibility();
@@ -3107,13 +3218,26 @@ function packRefGroups(groups){
   return groups.map(g=>{
     const valid=g.rows.filter(r=>r.width<=g.useful);
     const oversize=g.rows.filter(r=>r.width>g.useful);
-    const bobines=(g.useful>0&&valid.length)?pack(expandDemand(valid),g.useful,g.blade):[];
-    const planGroups=groupBobines(bobines,g.blade);
+    // Chutes en stock : déduites de la commande AVANT le packing (bobineaux déjà coupés).
+    const chutesUsed=computeChutesUsed(g);
+    const hasChutes=Object.keys(chutesUsed).length>0;
+    const items=(g.useful>0&&valid.length)
+      ? (hasChutes?reduceItemsByChutes(expandDemand(valid),chutesUsed):expandDemand(valid))
+      : [];
+    const bobines=items.length?pack(items,g.useful,g.blade):[];
+    let planGroups, chuteOrphan={};
+    if(hasChutes){
+      const asg=assignChutesForDisplay(bobines,chutesUsed);
+      chuteOrphan=asg.orphan;
+      planGroups=groupBobinesWithChutes(asg.bobines);
+    }else{
+      planGroups=groupBobines(bobines,g.blade);
+    }
     const totalBobines=bobines.length;
     const totalMat=totalBobines*g.useful;
     const totalUsed=bobines.reduce((s,p)=>s+calcStats(p,g.blade).total,0);
     const pct=totalMat>0?((totalMat-totalUsed)/totalMat*100):0;
-    return {...g, bobines, planGroups, oversize,
+    return {...g, bobines, planGroups, oversize, chutesUsed, chuteOrphan,
       stats:{totalBobines,totalMat,totalUsed,pct}};
   });
 }
@@ -3176,6 +3300,7 @@ function recalcPlan(){
     el.classList.remove('mach-feba','mach-maveg','mach-cevenini');
     if(['feba','maveg','cevenini'].includes(el.value)) el.classList.add('mach-'+el.value);
   });
+  colorVekaSelects();   // Profilé = cyan, VEKA = magenta
   // Tout recalcul automatique repart du plan optimisé : on abandonne une
   // éventuelle édition manuelle en cours (comportement validé).
   planManual=null;
@@ -3248,12 +3373,19 @@ function recalcPlan(){
   const perteMm=Math.max(0,totalMat-totalUsed-chuteStockMm);
   const pertePct=totalMat>0?(perteMm/totalMat*100):0;
   const perteCls=pertePct<3?'pct-green':pertePct<8?'pct-orange':'pct-red';
+  // Chutes en stock réellement utilisées (toutes réfs) : bobineaux prélevés, non coupés.
+  const chutesUsedAll={};
+  computed.forEach(c=>Object.entries(c.chutesUsed||{}).forEach(([w,q])=>{chutesUsedAll[w]=(chutesUsedAll[w]||0)+q;}));
+  const chutesUsedKeys=Object.keys(chutesUsedAll);
+  const chutesPieces=chutesUsedKeys.reduce((s,w)=>s+chutesUsedAll[w],0);
+  const chutesChipLabel=chutesUsedKeys.map(w=>chutesUsedAll[w]+'×'+fmt(Number(w))).join(' + ');
   if(statsEl) statsEl.innerHTML=heavyBanner+oversizeBanner+`
     <div class="stat-chip">📦 <span>${totalBobines}</span> bobine${totalBobines>1?'s':''}</div>
     <div class="stat-chip">⚙ <span>${planGroups.length}</span> config${planGroups.length>1?'s':''}</div>
     ${multi?`<div class="stat-chip">🎞 <span>${computed.length}</span> références</div>`:`<div class="stat-chip">utile <span>${fmt(computed[0].useful)} mm</span></div>`}
     <div class="stat-chip ${perteCls}">🗑 Perte ${multi?'globale ':''}<span>${fmt(perteMm)} mm · ${pertePct.toFixed(1)}%</span></div>
-    <div class="stat-chip pct-green">✂ Chute stock <span>${fmt(chuteStockMm)} mm</span></div>`;
+    <div class="stat-chip pct-green">✂ Chute stock <span>${fmt(chuteStockMm)} mm</span></div>
+    ${chutesPieces>0?`<div class="stat-chip chip-chute">✂ Stock utilisé <span>${chutesChipLabel}</span></div>`:''}`;
 
   // Rendu des cartes, réf par réf, avec bande de changement entre réfs.
   let html='';
@@ -3267,32 +3399,45 @@ function recalcPlan(){
     if(multi){
       const refLbl=c.ref||('Référence '+(ci+1));
       const mlPart=(c.longueur!=null&&String(c.longueur).trim()!=='')?`<span class="rb-m">${esc(String(c.longueur))} ml</span>`:'';
-      const attr=filmAttrStr(c); const attrPart=attr?`<span class="rb-m">${esc(attr)}</span>`:'';
+      const filmOnly=(c.film||'').trim();
+      const filmPart=filmOnly?`<span class="rb-m">${esc(filmOnly)}</span>`:'';
+      const vk=(c.veka||'').trim();
+      const vekaPart=vekaClass(vk)?`<span class="vbadge vbadge-${vk==='VEKA'?'veka':'profile'}">${esc(vk)}</span>`:'';
       html+=`<div class="ref-band${mc}">
         ${mLbl?`<span class="rb-mch">⚙ ${esc(mLbl)}</span>`:''}
         <span class="rb-name">🎞 ${esc(refLbl)}</span>
         <span class="rb-meta">
-          <span class="rb-m">laize ${fmt(useful)} mm</span>${mlPart}${attrPart}
+          <span class="rb-m">laize ${fmt(useful)} mm</span>${mlPart}${filmPart}${vekaPart}
           <span class="rb-m">${c.stats.totalBobines} bobine${c.stats.totalBobines>1?'s':''}</span>
           <span class="rb-m">perte ${c.stats.pct.toFixed(1)}%</span>
         </span>
       </div>`;
     }
+    // Note orphan : largeur entièrement prélevée du stock (aucune bobine à annoter).
+    const orphan=c.chuteOrphan||{};
+    const orphanKeys=Object.keys(orphan);
+    if(orphanKeys.length){
+      html+=`<div class="chute-band">✂ ${orphanKeys.map(w=>orphan[w]+'×'+fmt(Number(w))).join(' + ')} mm entièrement pris dans chute stock — aucune découpe sur bobine mère</div>`;
+    }
     c.planGroups.forEach((g,gi)=>{
       const st=calcStats(g.pattern,blade);
       const waste=useful-st.total;
-      const isLast=gi===c.planGroups.length-1;
+      const hasChute=!!g.chute;
+      const isLast=(gi===c.planGroups.length-1)&&!hasChute;  // une bobine portant une chute n'est jamais le « solde »
       const cls='bobine-card'+mc+(isLast?' solde':'');
       const wLabel=isLast
         ?`<span class="badge-solde">solde conservé ${fmt(waste)} mm</span>`
         :`<span class="badge ${waste<useful*0.03?'badge-green':waste<useful*0.08?'badge-orange':'badge-red'}">${fmt(waste)} mm chute</span>`;
       const bEnd=bGlobal+g.count-1;
       bGlobal=bEnd+1;
+      const confHtml=hasChute?configHtmlWithChute(g.pattern,g.chute):makeLabel(g.pattern);
+      const chuteNote=hasChute?`<div class="card-sub"><span class="chute-note">✂ ${Object.entries(g.chute).map(([w,q])=>q+'×'+fmt(Number(w))).join(' + ')} mm pris dans chute stock (non coupés ici)</span></div>`:'';
       html+=`<div class="${cls}" data-gi="${giGlobal}">
         <div class="bc-count">${g.count>1?g.count+' bobines':'1 bobine'}</div>
         <div class="bc-body">
-          <div class="card-config">${makeLabel(g.pattern)}</div>
+          <div class="card-config">${confHtml}</div>
           <div class="card-sub">${fmt(st.total)} / ${fmt(useful)} mm</div>
+          ${chuteNote}
         </div>
         ${wLabel}
       </div>`;
@@ -3466,6 +3611,26 @@ function mandrinRecapHTML(groups,client){
   return `<h3 style="font-size:14px;margin:18px 0 6px;color:#b45309">🏷 Codes mandrin (Legrand France)</h3>
   <table><tr><th>Largeur</th><th>Code mandrin (4 chiffres)</th></tr>${rows}</table>`;
 }
+// Config imprimable avec annotation chute (option B) : avant barré → après.
+function chutePrintConfig(pattern,chute){
+  if(!chute) return '<strong>'+esc(makeLabel(pattern))+'</strong>';
+  const parts=pattern.map(p=>{
+    if(chute[p.width]){
+      const before=p.qty+chute[p.width];
+      return '<s style="color:#999">'+before+'×'+p.width+'</s> <b style="color:#b45309">&rarr; '+p.qty+'×'+p.width+'</b>';
+    }
+    return esc(p.qty>1?p.qty+'×'+p.width:p.width+'mm');
+  });
+  return '<strong>'+parts.join(' + ')+'</strong>';
+}
+// Récap chutes imprimable pour une réf (chutes utilisées = prélevées). Vide si aucune.
+function chutePrintRecap(c){
+  const cu=(c&&c.chutesUsed)?c.chutesUsed:null;
+  if(!cu) return '';
+  const ks=Object.keys(cu); if(!ks.length) return '';
+  const lbl=ks.map(w=>cu[w]+'×'+fmt(Number(w))).join(' + ');
+  return '<div style="margin:2px 0 14px;padding:7px 11px;border:1.5px solid #f59e0b;background:#fff7e6;border-radius:6px;color:#7a5200;font-size:12px">✂ <b>Chutes en stock utilisées :</b> '+lbl+' mm — bobineaux prélevés du stock, non découpés sur bobine mère.</div>';
+}
 function getPlanHTML(){
   const autoGroups=packRefGroups(getRefGroups()).filter(c=>c.rows.length);
   // Si le plan a été modifié à la main, on imprime cette version.
@@ -3493,7 +3658,7 @@ function getPlanHTML(){
       const st=calcStats(g.pattern,blade),waste=useful-st.total,isLast=gi===c.planGroups.length-1;
       tRows+=`<tr style="${isLast?'background:#fffbea;font-style:italic':''}">
         <td>${g.count>1?g.count+' bobines':'1 bobine'}</td>
-        <td><strong>${makeLabel(g.pattern)}</strong></td>
+        <td>${chutePrintConfig(g.pattern,g.chute)}</td>
         <td>${st.laizes}</td>
         <td>${fmt(st.total)} / ${fmt(useful)}</td>
         <td>${isLast?'Solde '+fmt(waste)+' mm':fmt(waste)+' mm'}</td></tr>`;
@@ -3502,7 +3667,7 @@ function getPlanHTML(){
       const attr=filmAttrStr(c); const attrPart=attr?` · <b>${esc(attr)}</b>`:'';
       sections+=`<h3 style="font-size:14px;margin:18px 0 6px;color:#5b21b6">🎞 ${esc(c.ref||('Référence '+(ci+1)))} — bobine mère ${fmt(c.mother)} mm · utile ${fmt(useful)} mm · lame ${fmt(blade)} mm${(()=>{const _m=getMachineLabel(c.machine||'');return _m?' · ⚙ '+esc(_m):'';})()}${c.longueur?` · ${esc(String(c.longueur))} ml`:''}${attrPart}</h3>`;
     }
-    sections+=`<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr>${tRows}</table>`;
+    sections+=`<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr>${tRows}</table>`+chutePrintRecap(c);
   });
   if(!groups.length) sections='<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr></table>';
 
@@ -3534,7 +3699,7 @@ function printSavedPlan(id){
     : [{ref:s.ref,longueur:s.longueur,mother:parseNum(s.mother),edge:parseNum(s.edgeLoss),blade:parseNum(s.blade),rows:s.rows||[]}];
   const grpInput=arr.map(g=>{
     const mother=parseNum(g.mother), edge=parseNum(g.edge!=null?g.edge:s.edgeLoss);
-    return {ref:g.ref||'', longueur:g.longueur||'', film:g.film||'', veka:g.veka||'', mother, edge, useful:Math.max(0,mother-edge), blade:parseNum(g.blade!=null?g.blade:s.blade), machine:g.machine||'', rows:g.rows||[]};
+    return {ref:g.ref||'', longueur:g.longueur||'', film:g.film||'', veka:g.veka||'', mother, edge, useful:Math.max(0,mother-edge), blade:parseNum(g.blade!=null?g.blade:s.blade), machine:g.machine||'', rows:g.rows||[], chutes:g.chutes||[]};
   });
   // Plan manuel sauvegardé → on l'utilise tel quel ; sinon recalcul automatique.
   const groups=Array.isArray(s.planManual)&&s.planManual.length
@@ -3558,7 +3723,7 @@ function printSavedPlan(id){
       const st=calcStats(g.pattern,blade),waste=useful-st.total,isLast=gi===c.planGroups.length-1;
       tRows+=`<tr style="${isLast?'background:#fffbea;font-style:italic':''}">
         <td>${g.count>1?g.count+' bobines':'1 bobine'}</td>
-        <td><strong>${makeLabel(g.pattern)}</strong></td>
+        <td>${chutePrintConfig(g.pattern,g.chute)}</td>
         <td>${st.laizes}</td>
         <td>${fmt(st.total)} / ${fmt(useful)}</td>
         <td>${isLast?'Solde '+fmt(waste)+' mm':fmt(waste)+' mm'}</td></tr>`;
@@ -3567,7 +3732,7 @@ function printSavedPlan(id){
       const attr=filmAttrStr(c); const attrPart=attr?` · <b>${esc(attr)}</b>`:'';
       sections+=`<h3 style="font-size:14px;margin:18px 0 6px;color:#5b21b6">🎞 ${esc(c.ref||('Référence '+(ci+1)))} — bobine mère ${fmt(c.mother)} mm · utile ${fmt(useful)} mm · lame ${fmt(blade)} mm${(()=>{const _m=getMachineLabel(c.machine||'');return _m?' · ⚙ '+esc(_m):'';})()}${c.longueur?` · ${esc(String(c.longueur))} ml`:''}${attrPart}</h3>`;
     }
-    sections+=`<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr>${tRows}</table>`;
+    sections+=`<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr>${tRows}</table>`+chutePrintRecap(c);
   });
   if(!groups.length) sections='<table><tr><th>Bobines</th><th>Configuration</th><th>Laizes</th><th>Utilisé / Utile</th><th>Chute</th></tr></table>';
   const metaTech=multi
@@ -3915,11 +4080,16 @@ function renderSaves(){
     const filmLine=(()=>{
       const src=Array.isArray(s.refGroups)&&s.refGroups.length?s.refGroups:[{film:s.film||'',veka:s.veka||'',ref:''}];
       const parts=src.map(g=>{
-        const a=[g.film,g.veka].map(x=>(x||'').trim()).filter(Boolean).join(' · ');
-        return a?(src.length>1&&g.ref?g.ref+' : '+a:a):'';
+        const film=(g.film||'').trim();
+        const vk=(g.veka||'').trim();
+        const vkBadge=vekaClass(vk)?`<span class="vbadge vbadge-${vk==='VEKA'?'veka':'profile'}">${esc(vk)}</span>`:'';
+        const txt=film?esc(film):'';
+        const body=[txt,vkBadge].filter(Boolean).join(' ');
+        if(!body) return '';
+        return (src.length>1&&g.ref)?`${esc(g.ref)} : ${body}`:body;
       }).filter(Boolean);
       return parts.length
-        ?`<div class="save-meta" style="color:#c4b5fd">🎞 ${esc(parts.join(' | '))}</div>`
+        ?`<div class="save-meta" style="color:#c4b5fd">🎞 ${parts.join(' &nbsp;|&nbsp; ')}</div>`
         :'';
     })();
     return `<div class="save-card">
@@ -4123,6 +4293,11 @@ function buildPlanName(){
 function computeEcarts(rows){
   const commanded={};
   rows.forEach(r=>{commanded[r.width]=(commanded[r.width]||0)+r.qty;});
+  // Chutes en stock : pièces déjà coupées (bobineaux prélevés), donc NON à produire.
+  // On les retire du commandé, sinon elles seraient comptées comme déficit et
+  // déclencheraient un faux rattrapage.
+  const chuteUsed=getPlanChutesUsedByWidth();
+  Object.entries(chuteUsed).forEach(([w,q])=>{ if(commanded[w]!=null) commanded[w]=Math.max(0,commanded[w]-q); });
   // Réellement coupé = somme des configs des bobines effectivement COUPÉES.
   // (Une bobine non cochée "coupée" n'a rien produit : la compter fausserait
   //  l'écart et pouvait déclencher des rattrapages fantômes après un recalcul.)
@@ -4251,7 +4426,8 @@ async function confirmCommande(){
 function recalcEcartsFromFiche(opts){
   opts=opts||{};
   const op2=opts.op2||null; // {refKey, useful, blade} : re-pack du reste avec la laize op.2
-  if(!op2 && !chronoRunning){
+  const force=!!opts.force; // changement de plan op.1 : garde les coupées, recalcule le reste, même chrono à l'arrêt
+  if(!op2 && !force && !chronoRunning){
     alert('⏱ Le chronomètre doit être en marche pour recalculer le plan.');
     return;
   }
@@ -4282,6 +4458,8 @@ function recalcEcartsFromFiche(opts){
   const cmdByRef={};
   computed.forEach(c=>{
     const m={}; c.rows.forEach(r=>{m[r.width]=(m[r.width]||0)+r.qty;});
+    // Chutes en stock déjà prélevées (bobineaux) : retirées du reliquat à recouper.
+    Object.entries(c.chutesUsed||{}).forEach(([w,q])=>{ if(m[w]!=null) m[w]=Math.max(0,m[w]-q); });
     cmdByRef[refKey(c)]={command:m, useful:c.useful, blade:c.blade, longueur:c.longueur, ref:c.ref};
   });
 
@@ -4389,9 +4567,13 @@ function recalcEcartsFromFiche(opts){
 
     const head=op2
       ? '🔧 Plan re-découpé pour l\'opérateur 2 (laize utile '+fmt(op2.useful)+' mm).'
-      : (totalAdded>0?'♻ Plan ré-optimisé.':'♻ Recalcul terminé — commande couverte.');
+      : (force
+         ? (totalAdded>0
+            ? '♻ Plan recalculé avec les nouvelles dimensions — les bobines déjà coupées sont conservées.'
+            : '♻ Recalcul terminé — bobines déjà coupées conservées, le reste de la commande est couvert.')
+         : (totalAdded>0?'♻ Plan ré-optimisé.':'♻ Recalcul terminé — commande couverte.'));
     alert(head+'\n\n'+recap.join('\n'));
-    if(op2){ fichePlanValidated=true; updateFPlanHint(); }
+    if(op2||force){ fichePlanValidated=true; updateFPlanHint(); }
   },1000);
 }
 
@@ -4517,6 +4699,7 @@ async function saveCommandeFiche(rows,useful,blade,opts){
     commandeFiles:(migrateCommandePhoto(),commandeFiles.slice()),
     bls:[],
     valide:null,valideBy:null,valideAt:null,
+    chutesStock:getPlanChutesUsedByWidth(),
     manqueMatiere:opts.manqueMatiere===true
   };
   let tempsEntry=null;
@@ -4619,7 +4802,6 @@ function resetAll(){
   // Reset Fiche
   document.getElementById('ficheLines').innerHTML='';
   ficheLines=[];
-  ficheChutes=[]; if(typeof renderFicheChutes==='function') renderFicheChutes();
   Object.keys(ficholinePhotos).forEach(function(k){delete ficholinePhotos[k];});
   commandePhoto='';commandeFiles=[];refreshCommandePhotoZone();loadedSaveId=null;editingSaveId=null;
   if(typeof updateSaveBtnLabel==='function') updateSaveBtnLabel();
@@ -5957,6 +6139,7 @@ function showFicheDetail(id,autoPrint){
       <div style="display:inline-block;margin:8px 0 4px;padding:5px 16px;border-radius:9px;font-size:24px;font-weight:800;letter-spacing:1px;color:#fff;background:${machCol}">⚙ ${machLbl}</div>
       <div class="sub">${new Date(f.date).toLocaleString('fr-FR')} · ${f.totalBobines} bobines · perte <span class="badge-pct">${f.pct}%</span></div>
       ${(()=>{const pc=computePerteChute(f);return `<div class="sub" style="margin-top:4px">🗑 Perte (déchet) : <b style="color:#f87171">${fmt(pc.perteMm)} mm</b> · ✂ Chute pour stockage : <b style="color:#f59e0b">${fmt(pc.chuteStockMm)} mm</b></div>`;})()}
+      ${(()=>{const cs=f.chutesStock||{};const ks=Object.keys(cs);if(!ks.length)return '';const lbl=ks.map(w=>cs[w]+'×'+fmt(Number(w))).join(' + ');return `<div style="margin-top:8px;border:2px solid #f59e0b;background:#fff7e6;border-radius:8px;padding:9px 12px;color:#7a5200;font-size:13px;font-weight:600">✂ Chutes en stock utilisées : <b style="color:#b45309">${lbl} mm</b> — bobineaux prélevés du stock, non découpés sur bobine mère.</div>`;})()}
     </div>
     <button onclick="window.print()" style="padding:8px 16px;border-radius:8px;border:1px solid #444;background:#222;color:#e5e5e3;font-size:13px;cursor:pointer">🖨 Imprimer</button>
   </div>
@@ -6363,10 +6546,6 @@ function ficheParamMissing(){
 // valeurs machine réelles saisies par l'opérateur, puis régénère les bobines.
 // Bloqué si le découpage a déjà commencé (protège le travail terrain).
 function applyFichePlanChange(){
-  if(!isFicheUntouched()){
-    alert('⚠ Le découpage a déjà commencé sur cette fiche.\n\nImpossible de recalculer le plan : cela effacerait le travail en cours.');
-    return;
-  }
   const miss=ficheParamMissing();
   if(miss){
     alert('⚠ Renseigne '+miss.label+' avant de recalculer le plan.');
@@ -6375,50 +6554,20 @@ function applyFichePlanChange(){
   }
   // Propage mère/bords/lame vers le plan + recalcule (syncFicheParams remet le flag à false)
   syncFicheParams('mother'); syncFicheParams('edge'); syncFicheParams('blade');
-  // Régénère les bobines de la fiche depuis le plan recalculé (fiche untouched ⇒ pas de confirm)
-  importPlanToFiche({});
-  fichePlanValidated=true;
-  updateFPlanHint();
-  showToast('✓ Plan de découpe recalculé — '+ficheLines.length+' bobine(s)','ok');
-}
-// ---- Chutes du stock à intégrer au plan (#2) ----
-function addChuteReel(){
-  const groups=(typeof getRefGroups==='function'?getRefGroups():[]).filter(g=>(g.rows||[]).length);
-  let ref='';
-  if(groups.length>1){
-    const list=groups.map((g,i)=>(i+1)+') '+(g.ref||('Référence '+(i+1)))).join('\n');
-    const sel=prompt('Cette chute concerne quelle référence ?\n'+list+'\n\nTape le numéro :','1');
-    if(sel===null) return;
-    const idx=parseInt(sel,10)-1;
-    if(isNaN(idx)||idx<0||idx>=groups.length){ alert('Numéro de référence invalide.'); return; }
-    ref=groups[idx].ref||'';
-  }else if(groups.length===1){
-    ref=groups[0].ref||'';
+  if(isFicheUntouched()){
+    // Aucune bobine engagée : régénération complète depuis le plan (comportement d'origine).
+    importPlanToFiche({});
+    fichePlanValidated=true;
+    updateFPlanHint();
+    showToast('✓ Plan de découpe recalculé — '+ficheLines.length+' bobine(s)','ok');
+  }else{
+    // Des bobines sont DÉJÀ coupées : on les conserve et on recalcule UNIQUEMENT
+    // le reste avec les nouvelles dimensions. Le travail terrain n'est jamais effacé
+    // et le chrono se déverrouille (force). Débloque les commandes type Marouane
+    // quand la bobine mère change en cours de découpe.
+    if(!confirm('Des bobines sont déjà coupées sur cette fiche.\n\nLes bobines coupées seront CONSERVÉES, et seul le reste de la commande sera recalculé avec les nouvelles dimensions.\n\nContinuer ?')) return;
+    recalcEcartsFromFiche({force:true});
   }
-  const wRaw=prompt('Largeur de la chute à utiliser (mm) :','');
-  if(wRaw===null) return;
-  const w=parseNum(wRaw);
-  if(!(w>0)){ alert('Largeur invalide.'); return; }
-  ficheChutes.push({width:w, ref});
-  renderFicheChutes();
-  invalidateFichePlan(); // force un nouveau « Changement plan »
-  showToast('✂ Chute '+fmt(w)+' mm ajoutée — clique « Changement plan »','ok');
-}
-function removeChuteReel(i){
-  ficheChutes.splice(i,1);
-  renderFicheChutes();
-  invalidateFichePlan();
-}
-function renderFicheChutes(){
-  const el=document.getElementById('ficheChutesList'); if(!el) return;
-  if(!ficheChutes.length){ el.innerHTML=''; return; }
-  const multi=(typeof getRefGroups==='function'?getRefGroups():[]).filter(g=>(g.rows||[]).length).length>1;
-  el.innerHTML='<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Chutes à utiliser (consommées en priorité au « Changement plan ») :</div>'+
-    ficheChutes.map((c,i)=>`<div style="display:flex;align-items:center;gap:8px;background:rgba(245,158,11,0.08);border:1px solid #7a6010;border-radius:6px;padding:6px 10px;margin-bottom:4px;font-size:13px">
-        <span style="color:var(--orange);font-weight:700">✂ ${fmt(c.width)} mm</span>
-        ${multi&&c.ref?`<span style="color:var(--muted)">· ${esc(c.ref)}</span>`:''}
-        <button onclick="removeChuteReel(${i})" title="Retirer" style="margin-left:auto;background:none;border:none;color:var(--red);cursor:pointer;font-size:14px">🗑</button>
-      </div>`).join('');
 }
 // Bouton « Imprimer le plan » : imprime le plan complet recalculé avec les
 // valeurs machine réelles de la fiche (n'affecte ni les bobines ni le verrou chrono).
@@ -6568,6 +6717,7 @@ function addFicheLine(data){
         <input type="text" id="flConf_${id}" value="${data.conf||''}" placeholder="5×80 + 3×50"
           inputmode="text" oninput="onFicheConfChange('${id}')">
         <button class="btn btn-orange btn-sm" style="margin-top:8px" onclick="recalcEcartsFromFiche()" title="Recalcule les écarts (rattrapage / surplus) sur toute la commande">♻ Recalculer les écarts</button>
+        ${data.chuteNote?`<div class="fiche-chute-note">${esc(data.chuteNote)}</div>`:''}
       </div>
       <div class="field" style="grid-column:1/-1">
         <label>Test 2ème bobineaux</label>
@@ -6887,7 +7037,6 @@ function serializeFicheState(){
       lame:g('fNumLame')?.value||'',numJour:g('fNumJour')?.value||'',longueur:g('fLongueur')?.value||'',client:g('fClient')?.value||'',ref:g('fRef')?.value||'',
       numCmd:g('fNumCmd')?.value||'',dateLiv:g('fDateLiv')?.value||'',type:g('fType')?.value||'',palette:g('fPalette')?.value||'',etiquetage:g('fEtiquetage')?.value||'',cerclage:g('fCerclage')?.value||'',notes:g('fNotesEmballage')?.value||''},
     chrono:{sec:chronoSec, startTs:chronoStartTs, wasRunning:chronoRunning},
-    chutes:(ficheChutes||[]).slice(),
     lines:getFicheLinesData()
   };
 }
@@ -7003,7 +7152,6 @@ function restoreFicheState(st){
   if(g('fOp2DiffMachine')){g('fOp2DiffMachine').checked=!!st.fiche.op2DiffMachine;ficheMachine2=st.fiche.machine2||'';toggleOp2Machine();if(ficheMachine2)selectFicheMachine2(ficheMachine2);const sv=(id,v)=>{const el=g(id);if(el)el.value=v||'';};sv('fMother2',st.fiche.mother2);sv('fEdge2',st.fiche.edge2);sv('fBlade2',st.fiche.blade2);updateUtile2();}
   document.getElementById('ficheLines').innerHTML='';ficheLines=[];
   Object.keys(ficholinePhotos).forEach(k=>delete ficholinePhotos[k]);
-  ficheChutes=Array.isArray(st.chutes)?st.chutes.slice():[]; renderFicheChutes();
   (st.lines||[]).forEach(restoreFicheLineFromData);
   updateAllCumuls();updateCoupeeStatus();refreshOp2BobineList();renumberFicheLines();
   // Brouillon repris = plan déjà valide : le chrono peut redémarrer sans
