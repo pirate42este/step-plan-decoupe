@@ -1277,6 +1277,7 @@ function applyRole(){
   document.getElementById('logoutBtn').style.display='flex';
   document.getElementById('atelierBtn').style.display='flex';
   initAtelier();
+  if(typeof initPlanAutosave==='function') initPlanAutosave(); // demande 4
   const tag=document.getElementById('roleTag');
   const nom=currentUser?currentUser.nom:'';
   const prenom=nom?nom.split(' ')[0]:'';
@@ -1304,6 +1305,9 @@ function applyRole(){
   }
   // Boutons export / archive globale : admin + pilotage
   var canManage=canManageData();
+  // MINEUR-8 : les règles Firestore réservent saves create/update au pilotage/admin
+  // → masquer le bouton Sauvegarder du plan pour les opérateurs (sinon erreur permissions brute).
+  var psb=document.getElementById('planSaveBtn');if(psb)psb.style.display=canManage?'':'none';
   var fmb=document.getElementById('fichesManageBtns');if(fmb)fmb.style.display=canManage?'':'none';
   var tmb=document.getElementById('tempsManageBtns');if(tmb)tmb.style.display=canManage?'':'none';
   var bbz=document.getElementById('backupBtnZone');if(bbz)bbz.style.display=canManage?'flex':'none';
@@ -1365,7 +1369,7 @@ function stopAppCheckRefreshLoop(){
       }else{
         // UID non reconnu — déconnecter
         console.warn('UID non reconnu:',user.uid);
-        firebase.auth().signOut();
+        firebase.auth().signOut().catch(e=>console.warn('signOut échoué:',e));
       }
     }else{
       // Utilisateur déconnecté
@@ -2630,14 +2634,15 @@ function addOrderRowTo(btn){
 }
 // ---- CHUTES EN STOCK (saisie dans le plan, par référence) ----
 // Une chute = un bobineau déjà à la bonne largeur, déduit de la commande au calcul.
+// Demande 2 : saisie quantité D'ABORD, puis largeur en mm.
 function makePlanChuteRow(width='',qty=''){
   const div=document.createElement('div');
   div.className='rb-chute-row';
   div.innerHTML=`<span style="color:var(--orange);font-weight:700;font-size:14px">✂</span>
-    <input type="text" data-ct="cw" placeholder="30" value="${width}" inputmode="decimal" oninput="debouncedRecalcPlan()" style="max-width:90px">
-    <span class="order-lbl">mm ×</span>
     <input type="text" data-ct="cq" placeholder="2" value="${qty}" inputmode="numeric" oninput="debouncedRecalcPlan()" style="max-width:70px">
-    <span class="order-lbl">en stock</span>
+    <span class="order-lbl">×</span>
+    <input type="text" data-ct="cw" placeholder="30" value="${width}" inputmode="decimal" oninput="debouncedRecalcPlan()" style="max-width:90px">
+    <span class="order-lbl">mm en stock</span>
     <button class="btn btn-red btn-sm" style="padding:7px 10px" onclick="this.parentElement.remove();recalcPlan()">✕</button>`;
   return div;
 }
@@ -2874,7 +2879,12 @@ function bestPattern(counts,useful,blade){
   // 0/1 knapsack : on parcourt c de haut en bas pour ne prendre chaque item qu'une fois.
   for(let ii=0;ii<items.length;ii++){
     const it=items[ii];
-    const cost=Math.round(it.slot);
+    let cost=Math.round(it.slot);
+    // M1 : une pièce qui tient PHYSIQUEMENT dans la laize (slot <= useful+blade)
+    // ne doit jamais être rejetée par l'asymétrie round(cost) vs floor(CAP).
+    // On clampe son coût à CAP : elle occupe alors la bobine seule
+    // (le reste réel est < 0,5 mm, aucune autre pièce ne peut s'y loger).
+    if(cost>CAP && it.slot<=useful+blade+0.001) cost=CAP;
     if(cost<=0||cost>CAP) continue;
     for(let c=CAP;c>=cost;c--){
       const prev=dp[c-cost];
@@ -3651,8 +3661,14 @@ function getPlanHTML(){
 
   // Une table par référence (chacune sa laize utile / sa lame).
   let sections='';
+  let _prevMachLbl=null; // MINEUR-7 : bande changement de machine, comme en fiche
   groups.forEach((c,ci)=>{
     const useful=c.useful, blade=c.blade;
+    const _curMachLbl=getMachineLabel(c.machine||'')||'';
+    if(multi&&ci>0&&_prevMachLbl&&_curMachLbl&&_curMachLbl!==_prevMachLbl){
+      sections+=`<div style="margin:16px 0 4px;border:2px solid #b91c1c;background:#fee2e2;color:#b91c1c;font-weight:800;font-size:13px;letter-spacing:.04em;padding:8px 12px;text-align:center">⚙ CHANGEMENT DE MACHINE — ${esc(_prevMachLbl)} → ${esc(_curMachLbl)}</div>`;
+    }
+    if(_curMachLbl)_prevMachLbl=_curMachLbl;
     let tRows='';
     c.planGroups.forEach((g,gi)=>{
       const st=calcStats(g.pattern,blade),waste=useful-st.total,isLast=gi===c.planGroups.length-1;
@@ -3716,8 +3732,14 @@ function printSavedPlan(id){
   const mono=groups[0]||{};
   const refLabel=multi?groups.map(c=>c.ref||'?').join(' + '):(mono.ref||s.ref||'—');
   let sections='';
+  let _prevMachLbl=null; // MINEUR-7 : bande changement de machine, comme en fiche
   groups.forEach((c,ci)=>{
     const useful=c.useful, blade=c.blade;
+    const _curMachLbl=getMachineLabel(c.machine||'')||'';
+    if(multi&&ci>0&&_prevMachLbl&&_curMachLbl&&_curMachLbl!==_prevMachLbl){
+      sections+=`<div style="margin:16px 0 4px;border:2px solid #b91c1c;background:#fee2e2;color:#b91c1c;font-weight:800;font-size:13px;letter-spacing:.04em;padding:8px 12px;text-align:center">⚙ CHANGEMENT DE MACHINE — ${esc(_prevMachLbl)} → ${esc(_curMachLbl)}</div>`;
+    }
+    if(_curMachLbl)_prevMachLbl=_curMachLbl;
     let tRows='';
     c.planGroups.forEach((g,gi)=>{
       const st=calcStats(g.pattern,blade),waste=useful-st.total,isLast=gi===c.planGroups.length-1;
@@ -3993,6 +4015,7 @@ async function doSave(){
       if(typeof showToast==='function') showToast('💾 Plan sauvegardé','ok');
     }
   }catch(e){alert('Erreur sauvegarde : '+e.message);return;}
+  if(typeof clearPlanAutosaveDraft==='function') clearPlanAutosaveDraft(); // demande 4 : le plan est en base, le brouillon auto n'a plus lieu d'être
   if(typeof updateSaveBtnLabel==='function') updateSaveBtnLabel();
   closeSaveModal();showPage(2);
 }
@@ -4736,7 +4759,10 @@ async function saveCommandeFiche(rows,useful,blade,opts){
           const sv=savesCache.find(x=>x._id===loadedSaveId);
           if(sv){sv.deleted=true;sv.deletedAt=isoNow();}
           await logAudit('delete','saves',loadedSaveId,`Plan consommé (fiche créée) — ${client||''} / ${ref||''}`);
-        }catch(e){console.warn('Suppression du plan source impossible :',e);}
+        }catch(e){
+          console.warn('Suppression du plan source impossible :',e);
+          alert('⚠ La fiche est bien enregistrée, MAIS le plan source n\'a pas pu être marqué « consommé » (réseau ?).\n\nIl reste visible dans Données > Plans : archive-le manuellement pour éviter une double découpe.');
+        }
         loadedSaveId=null;
       }
     }catch(e){
@@ -4867,6 +4893,7 @@ function getFicheLinesData(){
       photo:ficholinePhotos[id]||'',
       actDechet:document.getElementById('act_dechet_'+id)?.classList.contains('btn-red')||false,
       actChutes:document.getElementById('act_chutes_'+id)?.classList.contains('btn-orange')||false,
+      actAccept:document.getElementById('act_accept_'+id)?.classList.contains('btn-green')||false,
       coupee:document.getElementById(id)?.classList.contains('coupee')||false
     };
   });
@@ -5037,6 +5064,7 @@ function renderTemps(){
     :'');
 }
 async function deleteTempo(id){
+  if(!confirm('Archiver ce relevé de temps ? (récupérable 45 jours)')) return;
   try{
     await db.collection('temps').doc(id).update({deleted:true,deletedAt:isoNow()});
     const item=tempsCache.find(x=>x._id===id);
@@ -5820,7 +5848,7 @@ function buildNcRows(){
         rows.push({
           ficheId:f._id,date:f.date,client:f.client||'—',ref:f.ref||'—',numCmd:f.numCmd||'',
           bobine:i+1,label:fd.label||'',types,detail:fd.ncDetail||'',ini:f.ini||'',
-          action:fd.actDechet?'Déchet':fd.actChutes?'Chutes':''
+          action:fd.actDechet?'Déchet':fd.actChutes?'Chutes':fd.actAccept?'+ Acceptable':''
         });
       }
     });
@@ -5943,7 +5971,8 @@ function computePerteChute(f){
     const u=(fd.useful!=null&&fd.useful>0)?fd.useful:(parseNum(f.useful)||0);
     const b=(fd.blade!=null)?fd.blade:(parseNum(f.blade)||0);
     const w=Math.max(0,u-calcStats(pat,b).total); // reste sur la laize utile
-    if(fd.actChutes || lastIdx.has(i)) chute+=w;   // récupéré (stock) ou solde
+    if(fd.actAccept){ /* + Acceptable : le bobineau part AVEC la commande — ni perte ni chute */ }
+    else if(fd.actChutes || lastIdx.has(i)) chute+=w;   // récupéré (stock) ou solde
     else perte+=w;                                 // déchet (lame + reste + 🗑 Déchet)
     perte+=edgeForFd(fd);                           // perte bords : toujours rognée
   });
@@ -6048,7 +6077,7 @@ function showFicheDetail(id,autoPrint){
         if(ncs.length) ncBadge=`<span style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:700;background:#3d1414;color:#f87171">⚠ ${ncs.join(', ')}</span>`;
       }
       const coupeeTag=fd&&fd.coupee?'<span style="color:#4ade80;font-weight:700">✓ Coupée</span>':'<span style="color:#888">— À couper</span>';
-      const actionTag=fd?(fd.actDechet?'<span style="color:#f87171">🗑 Déchet</span>':fd.actChutes?'<span style="color:#f59e0b">✂ Chutes</span>':''):'';
+      const actionTag=fd?(fd.actDechet?'<span style="color:#f87171">🗑 Déchet</span>':fd.actChutes?'<span style="color:#f59e0b">✂ Chutes</span>':fd.actAccept?'<span style="color:#4ade80">✔ + Acceptable</span>':''):'';
       const test2=fd?(fd.test2nc?('<span style="color:#f87171;font-weight:700">⚠ Non conforme</span>'+((fd.devi||fd.droit)?' <span style="color:#f59e0b;font-size:12px">('+[fd.devi?'Dévidage':'',fd.droit?'Droit':''].filter(Boolean).join(', ')+')</span>':'')):((fd.conforme!=null?fd.conforme:(fd.devi&&fd.droit))?'<span style="color:#4ade80">✓ Conforme</span>':'<span style="color:#888">— Non testé</span>')):'';
       const ncDetail=fd&&fd.ncDetail?`<div style="margin-top:4px;font-size:12px;color:#f59e0b;font-style:italic">📝 ${esc(fd.ncDetail)}</div>`:'';
       const photoCell=fd&&fd.photo?`<a href="${fd.photo}" target="_blank"><img src="${fd.photo}" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid #444;cursor:pointer"></a>`:'<span style="color:#555">—</span>';
@@ -6082,7 +6111,7 @@ function showFicheDetail(id,autoPrint){
       ?`<span style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:700;background:#3d1414;color:#f87171">⚠ ${ncs.join(', ')}</span>`
       :'<span style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:700;background:#14371f;color:#4ade80">✓ RAS</span>';
     const coupeeTag=fd.coupee?'<span style="color:#4ade80;font-weight:700">✓ Coupée</span>':'<span style="color:#888">— À couper</span>';
-    const actionTag=fd.actDechet?'<span style="color:#f87171">🗑 Déchet</span>':fd.actChutes?'<span style="color:#f59e0b">✂ Chutes</span>':'';
+    const actionTag=fd.actDechet?'<span style="color:#f87171">🗑 Déchet</span>':fd.actChutes?'<span style="color:#f59e0b">✂ Chutes</span>':fd.actAccept?'<span style="color:#4ade80">✔ + Acceptable</span>':'';
     const test2=fd.test2nc?('<span style="color:#f87171;font-weight:700">⚠ Non conforme</span>'+((fd.devi||fd.droit)?' <span style="color:#f59e0b;font-size:12px">('+[fd.devi?'Dévidage':'',fd.droit?'Droit':''].filter(Boolean).join(', ')+')</span>':'')):((fd.conforme!=null?fd.conforme:(fd.devi&&fd.droit))?'<span style="color:#4ade80">✓ Conforme</span>':'<span style="color:#888">— Non testé</span>');
     const ncDetail=fd.ncDetail?`<div style="margin-top:4px;font-size:12px;color:#f59e0b;font-style:italic">📝 ${esc(fd.ncDetail)}</div>`:'';
     const photoCell=fd.photo?`<a href="${fd.photo}" target="_blank"><img src="${fd.photo}" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid #444;cursor:pointer"></a>`:'<span style="color:#555">—</span>';
@@ -6759,6 +6788,7 @@ function addFicheLine(data){
         <div style="display:flex;gap:8px">
           <button class="btn btn-ghost btn-sm" id="act_dechet_${id}" onclick="toggleAction('${id}','dechet')" style="flex:1">🗑 Déchet</button>
           <button class="btn btn-ghost btn-sm" id="act_chutes_${id}" onclick="toggleAction('${id}','chutes')" style="flex:1">✂ Chutes</button>
+          <button class="btn btn-ghost btn-sm" id="act_accept_${id}" onclick="toggleAction('${id}','accept')" style="flex:1" title="Bobineau avec défaut mais acceptable : part avec la commande">✔ + Acceptable</button>
         </div>
       </div>
     </div>`;
@@ -6959,9 +6989,11 @@ function updateNC(id){
   if(badge){badge.textContent=hasNC?'NC':'RAS';badge.className='fl-badge '+(hasNC?'badge-red':'badge-green');}
 }
 function toggleAction(id,which){
-  const d=document.getElementById('act_dechet_'+id),c=document.getElementById('act_chutes_'+id);
-  if(which==='dechet'){const a=d.classList.contains('btn-red');d.className=a?'btn btn-ghost btn-sm':'btn btn-red btn-sm';if(!a)c.className='btn btn-ghost btn-sm';}
-  else{const a=c.classList.contains('btn-orange');c.className=a?'btn btn-ghost btn-sm':'btn btn-orange btn-sm';if(!a)d.className='btn btn-ghost btn-sm';}
+  const d=document.getElementById('act_dechet_'+id),c=document.getElementById('act_chutes_'+id),a=document.getElementById('act_accept_'+id);
+  const off=el=>{if(el)el.className='btn btn-ghost btn-sm';};
+  if(which==='dechet'){const on=d.classList.contains('btn-red');d.className=on?'btn btn-ghost btn-sm':'btn btn-red btn-sm';if(!on){off(c);off(a);}}
+  else if(which==='chutes'){const on=c.classList.contains('btn-orange');c.className=on?'btn btn-ghost btn-sm':'btn btn-orange btn-sm';if(!on){off(d);off(a);}}
+  else if(which==='accept'&&a){const on=a.classList.contains('btn-green');a.className=on?'btn btn-ghost btn-sm':'btn btn-green btn-sm';if(!on){off(d);off(c);}}
 }
 function parseConf(val){
   const pieces=[];
@@ -7076,6 +7108,54 @@ function startAutosave(){
 function stopAutosave(){
   if(_autosaveTimer){clearInterval(_autosaveTimer);_autosaveTimer=null;}
 }
+// ============================================================
+// AUTO-SAVE PLAN (demande 4) — dès qu'un utilisateur saisit ou modifie
+// quelque chose sur la page Plan, on maintient UN brouillon auto (id fixe)
+// rafraîchi toutes les 10 s. Écriture uniquement si le contenu a changé.
+// Purgé automatiquement quand le plan est sauvegardé pour de vrai (doSave).
+// ============================================================
+const PLAN_AUTOSAVE_ID='d_autosave_plan';
+let _planAutosaveTimer=null;
+let _planAutosaveLast='';
+let _planAutosaveBound=false;
+function planHasContent(){
+  const g=id=>document.getElementById(id);
+  if(((g('planClient')&&g('planClient').value)||'').trim()) return true;
+  if(((g('planRef')&&g('planRef').value)||'').trim()) return true;
+  if(((g('planNumCmd')&&g('planNumCmd').value)||'').trim()) return true;
+  try{ if(getOrderRows().some(r=>(r.qty>0)||(r.width>0))) return true; }catch(e){}
+  return false;
+}
+function planAutosaveTick(){
+  if(!planHasContent()) return;
+  const st=serializeFicheState();
+  const sig=JSON.stringify(st.plan);
+  if(sig===_planAutosaveLast) return;   // rien n'a changé depuis le dernier tick
+  const label='🔄 Auto plan · '+((st.plan.client||'—')+' / '+(st.plan.numCmd||'sans n°'));
+  const drafts=loadDrafts().filter(d=>d.id!==PLAN_AUTOSAVE_ID);
+  drafts.unshift({id:PLAN_AUTOSAVE_ID,savedAt:isoNow(),label,state:st,auto:true,planDraft:true});
+  if(persistDrafts(drafts)) _planAutosaveLast=sig;
+}
+function startPlanAutosave(){
+  if(_planAutosaveTimer) return;
+  _planAutosaveTimer=setInterval(planAutosaveTick,10000);
+}
+function clearPlanAutosaveDraft(){
+  persistDrafts(loadDrafts().filter(d=>d.id!==PLAN_AUTOSAVE_ID));
+  // Mémoriser la signature de l'état courant : le contenu encore à l'écran
+  // (déjà en base) ne doit pas recréer le brouillon au tick suivant.
+  // Seule une NOUVELLE modification le recréera.
+  try{_planAutosaveLast=JSON.stringify(serializeFicheState().plan);}catch(e){_planAutosaveLast='';}
+}
+function initPlanAutosave(){
+  if(_planAutosaveBound) return;
+  const p=document.getElementById('page0');
+  if(!p) return;
+  _planAutosaveBound=true;
+  // Écoute déléguée : toute saisie/modif sur la page Plan arme le timer.
+  p.addEventListener('input',startPlanAutosave,{passive:true});
+  p.addEventListener('change',startPlanAutosave,{passive:true});
+}
 function deleteDraft(id){
   if(!confirm('Supprimer ce brouillon ?')) return;
   persistDrafts(loadDrafts().filter(d=>d.id!==id));
@@ -7085,8 +7165,16 @@ function resumeDraft(id){
   const d=loadDrafts().find(x=>x.id===id);
   if(!d){alert('Brouillon introuvable.');return;}
   restoreFicheState(d.state);
-  showPage(1);
-  showToast('Brouillon chargé — vérifie les bobines puis envoie','ok');
+  if(d.planDraft){
+    // Brouillon de saisie plan : on revient sur la page Plan, et la fiche
+    // n'est pas considérée comme validée (restoreFicheState la valide par défaut).
+    fichePlanValidated=false; if(typeof updateFPlanHint==='function') updateFPlanHint();
+    showPage(0);
+    showToast('Saisie de plan reprise depuis le brouillon auto','ok');
+  }else{
+    showPage(1);
+    showToast('Brouillon chargé — vérifie les bobines puis envoie','ok');
+  }
 }
 function restoreFicheLineFromData(ld){
   addFicheLine({label:ld.label||'',conf:ld.conf||'',ref:ld.ref||'',useful:ld.useful||0,blade:ld.blade||0,machine:ld.machine||''});
@@ -7102,6 +7190,7 @@ function restoreFicheLineFromData(ld){
   updateTest2Subs(id);
   if(ld.actDechet) toggleAction(id,'dechet');
   if(ld.actChutes) toggleAction(id,'chutes');
+  if(ld.actAccept) toggleAction(id,'accept');
   if(ld.coupee){
     const line=document.getElementById(id),btn=document.getElementById('coupeeBtn_'+id);
     if(line) line.classList.add('coupee');
@@ -7110,6 +7199,9 @@ function restoreFicheLineFromData(ld){
 }
 function restoreFicheState(st){
   if(!st) return;
+  // MINEUR-6 : un brouillon repris n'est pas le plan sauvegardé chargé juste avant.
+  // Sans ça, l'envoi de la fiche archiverait « consommé » un plan jamais coupé.
+  loadedSaveId=null;
   const g=id=>document.getElementById(id);
   selectMachine(st.plan.machine||'feba');
   if(g('motherWidth'))g('motherWidth').value=st.plan.mother;
@@ -7194,11 +7286,13 @@ function renderDrafts(){
   list.innerHTML=drafts.map(d=>{
     const dt=new Date(d.savedAt);const ds=dt.toLocaleDateString('fr-FR')+' '+dt.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
     const nb=(d.state&&d.state.lines)?d.state.lines.length:0;
-    const tag=d.fromSend?'<span style="display:inline-block;background:#3d2a00;color:var(--orange);font-size:12px;font-weight:700;padding:2px 8px;border-radius:5px;margin-left:6px">non envoyé</span>':'';
+    const tag=d.fromSend?'<span style="display:inline-block;background:#3d2a00;color:var(--orange);font-size:12px;font-weight:700;padding:2px 8px;border-radius:5px;margin-left:6px">non envoyé</span>'
+      :(d.planDraft?'<span style="display:inline-block;background:#1e2a3d;color:#60a5fa;font-size:12px;font-weight:700;padding:2px 8px;border-radius:5px;margin-left:6px">saisie plan</span>':'');
+    const meta=d.planDraft?'Saisie de plan en cours':(nb+' bobine(s)');
     return `<div class="save-card">
       <div class="save-info">
         <div class="save-title">${esc(d.label)}${tag}</div>
-        <div class="save-meta">Brouillon du ${ds} · ${nb} bobine(s)</div>
+        <div class="save-meta">Brouillon du ${ds} · ${meta}</div>
       </div>
       <div class="save-actions">
         <button class="btn btn-green btn-sm" onclick="resumeDraft('${d.id}')">▶ Reprendre</button>
